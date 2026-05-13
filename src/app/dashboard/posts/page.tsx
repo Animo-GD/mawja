@@ -542,28 +542,39 @@ export default function PostsPage() {
 
   const [tab, setTab] = useState<'create' | 'posts' | 'ideas' | 'images' | 'videos'>('create');
 
-  // ── Idea batches (persisted to localStorage) ──────────────────────
-  const [ideaBatches, setIdeaBatches] = useState<IdeaBatch[]>(() => {
-    try {
-      const raw = localStorage.getItem('sf_idea_batches');
-      if (!raw) return [];
-      return (JSON.parse(raw) as { timestamp: string; ideas: any[] }[]).map(b => ({
-        ...b,
-        timestamp: new Date(b.timestamp),
-      }));
-    } catch { return []; }
-  });
+  // ── Idea batches (per-user, persisted to localStorage) ────────────
+  const [userId, setUserId] = useState<string>('');
+  const [ideaBatches, setIdeaBatches] = useState<IdeaBatch[]>([]);
+
+  // Load user ID once, then read their idea batches from localStorage
+  useEffect(() => {
+    api.getUserProfile().then(profile => {
+      const uid = profile.id;
+      setUserId(uid);
+      try {
+        const raw = localStorage.getItem(`sf_idea_batches_${uid}`);
+        if (!raw) return;
+        const parsed = (JSON.parse(raw) as { timestamp: string; ideas: any[] }[]).map(b => ({
+          ...b,
+          timestamp: new Date(b.timestamp),
+        }));
+        setIdeaBatches(parsed);
+      } catch { /* ignore */ }
+    }).catch(() => { /* not logged in or failed */ });
+  }, []);
 
   const addIdeaBatch = (ideas: any[]) => {
     const batch: IdeaBatch = { timestamp: new Date(), ideas };
     setIdeaBatches(prev => {
-      const next = [batch, ...prev].slice(0, 20); // keep last 20 batches
-      try { localStorage.setItem('sf_idea_batches', JSON.stringify(next)); } catch {}
+      const next = [batch, ...prev].slice(0, 20);
+      if (userId) {
+        try { localStorage.setItem(`sf_idea_batches_${userId}`, JSON.stringify(next)); } catch {}
+      }
       return next;
     });
     setTab('ideas');
   };
-  const [form, setForm] = useState({ topic: '', platform: 'instagram', tone: 'casual', language: 'en', product_notes: '' });
+  const [form, setForm] = useState({ topic: '', platform: 'instagram', tone: 'casual', language: 'en', product_notes: '', generation_notes: '' });
   const [templateId, setTemplateId] = useState<string>('');
   const [templateName, setTemplateName] = useState<string>('');
 
@@ -608,7 +619,7 @@ export default function PostsPage() {
     setForm(f => ({ 
       ...f, 
       topic: idea.topic || idea.title,
-      product_notes: idea.product_notes || idea.description,
+      generation_notes: idea.product_notes || idea.description, // idea's directive goes to generation_notes
       platform: idea.platform || f.platform,
     }));
     setShowIdeasModal(false);
@@ -929,6 +940,37 @@ export default function PostsPage() {
               </div>
 
               <div className="form-group">
+                <label className="form-label" htmlFor="generation-notes" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Wand2 size={13} style={{ color: 'var(--color-accent)' }} />
+                  {isAr ? 'ملاحظات التوليد' : 'Generation Notes'}
+                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 400, marginInlineStart: 4 }}>
+                    {isAr ? '(تُملأ تلقائياً عند اختيار فكرة)' : '(auto-filled when you pick an idea)'}
+                  </span>
+                </label>
+                <textarea
+                  id="generation-notes"
+                  className="form-input"
+                  rows={2}
+                  value={form.generation_notes}
+                  onChange={e => setForm(f => ({ ...f, generation_notes: e.target.value }))}
+                  placeholder={isAr ? 'تعليمات خاصة للذكاء الاصطناعي حول طريقة إنتاج المحتوى...' : 'Creative direction for the AI on how to produce this content...'}
+                  style={{
+                    border: form.generation_notes ? '1px solid var(--color-accent)' : undefined,
+                    background: form.generation_notes ? 'color-mix(in srgb, var(--color-accent) 5%, transparent)' : undefined,
+                  }}
+                />
+                {form.generation_notes && (
+                  <button
+                    type="button"
+                    style={{ marginTop: 4, fontSize: '0.74rem', color: 'var(--color-error)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                    onClick={() => setForm(f => ({ ...f, generation_notes: '' }))}
+                  >
+                    {isAr ? 'مسح' : 'Clear'}
+                  </button>
+                )}
+              </div>
+
+              <div className="form-group">
                 <label className="form-label" htmlFor="product-image">Product Image (Optional)</label>
                 <input
                   id="product-image"
@@ -1192,7 +1234,7 @@ export default function PostsPage() {
                     onClick={() => {
                       if (confirm(isAr ? 'حذف جميع الأفكار المحفوظة؟' : 'Clear all saved ideas?')) {
                         setIdeaBatches([]);
-                        try { localStorage.removeItem('sf_idea_batches'); } catch {}
+                        try { if (userId) localStorage.removeItem(`sf_idea_batches_${userId}`); } catch {}
                       }
                     }}
                   >
