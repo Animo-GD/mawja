@@ -30,10 +30,15 @@ function IdeasModal({ isOpen, onClose, onSelect, platform, isAr }: { isOpen: boo
   const handleFetch = async () => {
     setLoading(true);
     try {
-      const data = await api.getIdeas(platform);
-      setIdeas(data);
-    } catch (err) {
-      toast.error('Failed to fetch ideas');
+      const res = await fetch('/api/content/suggest', { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to fetch suggestions');
+      }
+      const data = await res.json();
+      setIdeas(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to fetch ideas');
     } finally {
       setLoading(false);
     }
