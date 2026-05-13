@@ -540,7 +540,7 @@ export default function PostsPage() {
   const isAr = lang === 'ar';
   const qc = useQueryClient();
 
-  const [tab, setTab] = useState<'create' | 'posts' | 'ideas'>('create');
+  const [tab, setTab] = useState<'create' | 'posts' | 'ideas' | 'images' | 'videos'>('create');
 
   // ── Idea batches (persisted to localStorage) ──────────────────────
   const [ideaBatches, setIdeaBatches] = useState<IdeaBatch[]>(() => {
