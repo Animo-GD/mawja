@@ -2,10 +2,6 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
 
-const SUGGEST_WEBHOOK_URL =
-  process.env.N8N_SUGGEST_CONTENT_URL ||
-  'https://moaaz-n8n.20.56.6.98.sslip.io/webhook/suggest_content';
-
 export async function POST() {
   try {
     const session = await getSession();
@@ -13,7 +9,15 @@ export async function POST() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const response = await fetch(SUGGEST_WEBHOOK_URL, {
+    const webhookUrl = process.env.N8N_SUGGEST_CONTENT_URL;
+    if (!webhookUrl) {
+      return NextResponse.json(
+        { error: 'N8N_SUGGEST_CONTENT_URL is not set in .env.local' },
+        { status: 503 }
+      );
+    }
+
+    const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: session.id }),
