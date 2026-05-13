@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, Post } from '@/lib/api';
 import dynamic from 'next/dynamic';
-import { Loader2, Sparkles, Calendar, Trash2, Clock, CheckCircle, XCircle, Image as ImageIcon, FileText, Video, Save, Lightbulb, X, Copy, Download, Upload, Trash, Wand2, TrendingUp } from 'lucide-react';
+import { Loader2, Sparkles, Calendar, Trash2, Clock, CheckCircle, XCircle, Image as ImageIcon, FileText, Video, Save, Lightbulb, X, Copy, Download, Upload, Trash, Wand2, TrendingUp, LayoutTemplate, ExternalLink } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Toaster } from 'react-hot-toast';
 import { useLang } from '@/lib/LanguageContext';
@@ -564,6 +564,26 @@ export default function PostsPage() {
     setTab('ideas');
   };
   const [form, setForm] = useState({ topic: '', platform: 'instagram', tone: 'casual', language: 'en', product_notes: '' });
+  const [templateId, setTemplateId] = useState<string>('');
+  const [templateName, setTemplateName] = useState<string>('');
+
+  // Read template_id from URL query param (set by the Templates page)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tid = params.get('template_id');
+    if (!tid) return;
+    setTemplateId(tid);
+    // Fetch the template name for display
+    import('@/lib/supabase').then(({ supabase }) => {
+      supabase.from('templates').select('name').eq('id', tid).single().then(({ data }) => {
+        if (data?.name) setTemplateName(data.name);
+      });
+    });
+    // Clean the URL without reloading
+    const url = new URL(window.location.href);
+    url.searchParams.delete('template_id');
+    window.history.replaceState({}, '', url.toString());
+  }, []);
   const [generated, setGenerated] = useState<{ text: string; image_url?: string; video_url?: string } | null>(null);
   const [previewPostId, setPreviewPostId] = useState<string | null>(null);
   const [editedText, setEditedText] = useState('');
@@ -689,7 +709,7 @@ export default function PostsPage() {
       const res = await fetch('/api/content/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, product_image_url: uploadedImageUrl || null, action_type }),
+        body: JSON.stringify({ ...form, product_image_url: uploadedImageUrl || null, action_type, template_id: templateId || null }),
       });
       const data = await res.json();
 
@@ -922,6 +942,64 @@ export default function PostsPage() {
                     {productImage ? `Selected: ${productImage.name}` : 'Image uploaded and ready'}
                   </p>
                 )}
+              </div>
+
+              {/* Template ID field */}
+              <div className="form-group">
+                <label className="form-label" htmlFor="template-id" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <LayoutTemplate size={13} style={{ color: 'var(--color-accent)' }} />
+                    {isAr ? 'القالب المختار' : 'Template'}
+                  </span>
+                  {templateId && (
+                    <button
+                      type="button"
+                      style={{ fontSize: '0.74rem', color: 'var(--color-error)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                      onClick={() => { setTemplateId(''); setTemplateName(''); }}
+                    >
+                      {isAr ? 'إزالة' : 'Clear'}
+                    </button>
+                  )}
+                </label>
+                <div
+                  id="template-id"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => { if (!templateId) window.location.href = '/dashboard/templates'; }}
+                  onKeyDown={e => { if (e.key === 'Enter' && !templateId) window.location.href = '/dashboard/templates'; }}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    border: `1px solid ${templateId ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                    background: templateId ? 'color-mix(in srgb, var(--color-accent) 8%, transparent)' : 'var(--color-bg-warm)',
+                    fontSize: '0.88rem',
+                    color: templateId ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
+                    cursor: templateId ? 'default' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    transition: 'all 0.2s',
+                    userSelect: 'none',
+                  }}
+                >
+                  {templateId ? (
+                    <>
+                      <LayoutTemplate size={14} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {templateName || templateId}
+                      </span>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>
+                        {templateId.slice(0, 8)}…
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <LayoutTemplate size={14} style={{ flexShrink: 0 }} />
+                      <span>{isAr ? 'انقر لاختيار قالب...' : 'Click to pick a template…'}</span>
+                      <ExternalLink size={13} style={{ marginInlineStart: 'auto', opacity: 0.5 }} />
+                    </>
+                  )}
+                </div>
               </div>
 
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
