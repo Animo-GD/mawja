@@ -109,12 +109,13 @@ function IdeasModal({ isOpen, onClose, onSelect, isAr }: { isOpen: boolean; onCl
               </div>
               {/* Cycling message */}
               <div style={{ minHeight: 48 }}>
-                <p style={{
-                  fontSize: '0.95rem', fontWeight: 600,
-                  color: 'var(--color-text-primary)',
-                  animation: 'ideasFade 0.5s ease',
-                  key: stepIdx,
-                }}>
+                <p
+                  key={stepIdx}
+                  style={{
+                    fontSize: '0.95rem', fontWeight: 600,
+                    color: 'var(--color-text-primary)',
+                    animation: 'ideasFade 0.5s ease',
+                  }}>
                   {steps[stepIdx]}
                 </p>
                 <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
