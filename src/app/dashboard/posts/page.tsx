@@ -32,7 +32,9 @@ const LOADING_STEPS_AR = [
   '✨ لحظات وتكون جاهزة...',
 ];
 
-function IdeasModal({ isOpen, onClose, onSelect, isAr }: { isOpen: boolean; onClose: () => void; onSelect: (idea: any) => void; platform: string; isAr: boolean }) {
+interface IdeaBatch { timestamp: Date; ideas: any[]; }
+
+function IdeasModal({ isOpen, onClose, onSelect, onIdeasFetched, isAr }: { isOpen: boolean; onClose: () => void; onSelect: (idea: any) => void; onIdeasFetched: (ideas: any[]) => void; platform: string; isAr: boolean }) {
   const [ideas, setIdeas] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [stepIdx, setStepIdx] = useState(0);
@@ -86,6 +88,7 @@ function IdeasModal({ isOpen, onClose, onSelect, isAr }: { isOpen: boolean; onCl
 
       console.log('[IdeasModal] parsed ideas:', ideas.length, ideas);
       setIdeas(ideas);
+      if (ideas.length > 0) onIdeasFetched(ideas);
     } catch (err: any) {
       toast.error(err.message || (isAr ? 'فشل جلب الأفكار' : 'Failed to fetch ideas'));
     } finally {
@@ -537,7 +540,29 @@ export default function PostsPage() {
   const isAr = lang === 'ar';
   const qc = useQueryClient();
 
-  const [tab, setTab] = useState<'create' | 'posts' | 'images' | 'videos'>('create');
+  const [tab, setTab] = useState<'create' | 'posts' | 'ideas'>('create');
+
+  // ── Idea batches (persisted to localStorage) ──────────────────────
+  const [ideaBatches, setIdeaBatches] = useState<IdeaBatch[]>(() => {
+    try {
+      const raw = localStorage.getItem('sf_idea_batches');
+      if (!raw) return [];
+      return (JSON.parse(raw) as { timestamp: string; ideas: any[] }[]).map(b => ({
+        ...b,
+        timestamp: new Date(b.timestamp),
+      }));
+    } catch { return []; }
+  });
+
+  const addIdeaBatch = (ideas: any[]) => {
+    const batch: IdeaBatch = { timestamp: new Date(), ideas };
+    setIdeaBatches(prev => {
+      const next = [batch, ...prev].slice(0, 20); // keep last 20 batches
+      try { localStorage.setItem('sf_idea_batches', JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setTab('ideas');
+  };
   const [form, setForm] = useState({ topic: '', platform: 'instagram', tone: 'casual', language: 'en', product_notes: '' });
   const [generated, setGenerated] = useState<{ text: string; image_url?: string; video_url?: string } | null>(null);
   const [previewPostId, setPreviewPostId] = useState<string | null>(null);
@@ -793,6 +818,7 @@ export default function PostsPage() {
         isOpen={showIdeasModal}
         onClose={() => setShowIdeasModal(false)}
         onSelect={handleSelectIdea}
+        onIdeasFetched={addIdeaBatch}
         platform={form.platform}
         isAr={isAr}
       />
@@ -813,6 +839,10 @@ export default function PostsPage() {
           <button className={`tab-btn${tab === 'posts' ? ' active' : ''}`} onClick={() => setTab('posts')}>
             <FileText size={14} style={{ marginInlineEnd: 6, verticalAlign: 'middle' }} />{isAr ? 'المنشورات' : 'Posts'}
             {posts && <span className="badge" style={{ marginInlineStart: 8 }}>{posts.length}</span>}
+          </button>
+          <button className={`tab-btn${tab === 'ideas' ? ' active' : ''}`} onClick={() => setTab('ideas')}>
+            <Lightbulb size={14} style={{ marginInlineEnd: 6, verticalAlign: 'middle' }} />{isAr ? 'الأفكار' : 'Ideas'}
+            {ideaBatches.length > 0 && <span className="badge" style={{ marginInlineStart: 8 }}>{ideaBatches.reduce((s, b) => s + b.ideas.length, 0)}</span>}
           </button>
         </div>
 
@@ -1051,6 +1081,153 @@ export default function PostsPage() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ── Ideas tab ── */}
+        {tab === 'ideas' && (
+          <div>
+            {ideaBatches.length === 0 ? (
+              <div className="empty-state" style={{ minHeight: 400 }}>
+                <Lightbulb size={48} style={{ opacity: 0.2 }} />
+                <p className="text-body-med" style={{ color: 'var(--color-text-secondary)' }}>
+                  {isAr ? 'لا توجد أفكار بعد' : 'No ideas yet'}
+                </p>
+                <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)' }}>
+                  {isAr ? 'اضغط "أعطني فكرة" لتوليد أفكار محتوى مخصصة لنشاطك' : 'Click "Give me an idea" to generate tailored content ideas'}
+                </p>
+                <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={() => { setTab('create'); setShowIdeasModal(true); }}>
+                  <Lightbulb size={14} />
+                  {isAr ? 'أعطني فكرة' : 'Give me an idea'}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+                {/* Header row */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)' }}>
+                    {ideaBatches.reduce((s, b) => s + b.ideas.length, 0)} {isAr ? 'فكرة في' : 'ideas across'} {ideaBatches.length} {isAr ? 'جلسة' : ideaBatches.length === 1 ? 'session' : 'sessions'}
+                  </p>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    style={{ color: 'var(--color-error)', borderColor: 'var(--color-error)' }}
+                    onClick={() => {
+                      if (confirm(isAr ? 'حذف جميع الأفكار المحفوظة؟' : 'Clear all saved ideas?')) {
+                        setIdeaBatches([]);
+                        try { localStorage.removeItem('sf_idea_batches'); } catch {}
+                      }
+                    }}
+                  >
+                    <Trash2 size={13} />
+                    {isAr ? 'مسح الكل' : 'Clear all'}
+                  </button>
+                </div>
+
+                {ideaBatches.map((batch, bIdx) => {
+                  const now = new Date();
+                  const diffMs = now.getTime() - batch.timestamp.getTime();
+                  const diffMins = Math.floor(diffMs / 60000);
+                  const diffHrs = Math.floor(diffMins / 60);
+                  const timeLabel = diffMins < 1
+                    ? (isAr ? 'الآن' : 'Just now')
+                    : diffMins < 60
+                      ? (isAr ? `منذ ${diffMins} دقيقة` : `${diffMins}m ago`)
+                      : diffHrs < 24
+                        ? (isAr ? `منذ ${diffHrs} ساعة` : `${diffHrs}h ago`)
+                        : batch.timestamp.toLocaleDateString(isAr ? 'ar-EG' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+                  return (
+                    <div key={bIdx}>
+                      {/* Batch timestamp header */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          padding: '4px 12px', borderRadius: 20,
+                          background: bIdx === 0 ? 'var(--color-accent)' : 'var(--color-bg-warm)',
+                          color: bIdx === 0 ? '#fff' : 'var(--color-text-secondary)',
+                          fontSize: '0.78rem', fontWeight: 600,
+                          border: `1px solid ${bIdx === 0 ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                        }}>
+                          <Clock size={11} />
+                          {timeLabel}
+                          {bIdx === 0 && <span style={{ opacity: 0.8, marginInlineStart: 4 }}>· {isAr ? 'أحدث' : 'Latest'}</span>}
+                        </div>
+                        <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+                        <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                          {batch.ideas.length} {isAr ? 'أفكار' : 'ideas'}
+                        </span>
+                      </div>
+
+                      {/* Ideas grid */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+                        {batch.ideas.map((idea: any, iIdx: number) => (
+                          <div
+                            key={idea.id || iIdx}
+                            className="card-flat"
+                            style={{
+                              border: '1px solid var(--color-border)',
+                              padding: '16px',
+                              borderRadius: 12,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 10,
+                              transition: 'all 0.2s ease',
+                            }}
+                            onMouseEnter={e => {
+                              e.currentTarget.style.borderColor = 'var(--color-accent)';
+                              e.currentTarget.style.boxShadow = 'var(--shadow-card)';
+                            }}
+                            onMouseLeave={e => {
+                              e.currentTarget.style.borderColor = 'var(--color-border)';
+                              e.currentTarget.style.boxShadow = 'none';
+                            }}
+                          >
+                            {/* Badges row */}
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              <span className="badge" style={{ textTransform: 'capitalize', fontSize: '0.72rem' }}>{idea.platform}</span>
+                              {idea.content_type && (
+                                <span className="badge badge-gray" style={{ textTransform: 'capitalize', fontSize: '0.72rem' }}>{idea.content_type}</span>
+                              )}
+                            </div>
+
+                            {/* Title */}
+                            <h3 style={{ margin: 0, fontSize: '0.94rem', fontWeight: 700, color: 'var(--color-text-primary)', lineHeight: 1.4 }}>
+                              {idea.title}
+                            </h3>
+
+                            {/* Description */}
+                            <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--color-text-secondary)', lineHeight: 1.55 }}>
+                              {idea.description}
+                            </p>
+
+                            {/* Trend */}
+                            {idea.trend && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
+                                <TrendingUp size={11} />
+                                <span>{idea.trend}</span>
+                              </div>
+                            )}
+
+                            {/* Action */}
+                            <button
+                              className="btn btn-primary btn-sm"
+                              style={{ marginTop: 'auto', justifyContent: 'center' }}
+                              onClick={() => {
+                                handleSelectIdea(idea);
+                                setTab('create');
+                              }}
+                            >
+                              <Wand2 size={13} />
+                              {isAr ? 'استخدم هذه الفكرة' : 'Use this idea'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
