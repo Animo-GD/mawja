@@ -57,13 +57,35 @@ function IdeasModal({ isOpen, onClose, onSelect, isAr }: { isOpen: boolean; onCl
     try {
       const res = await fetch('/api/content/suggest', { method: 'POST' });
       const json = await res.json().catch(() => ({}));
+
+      console.log('[IdeasModal] raw response:', JSON.stringify(json));
+
       if (res.status === 402) {
         toast.error(json.error || (isAr ? 'رصيد غير كافٍ، يرجى شراء المزيد من الكريدت' : 'Not enough credits! Please buy more credits.'));
         onClose();
         return;
       }
       if (!res.ok) throw new Error(json.error || 'Failed to fetch suggestions');
-      setIdeas(Array.isArray(json) ? json : []);
+
+      // Normalize all possible shapes the server or n8n might return:
+      // 1. Already an array of ideas            → [{id,title,...}, ...]
+      // 2. n8n envelope not yet unwrapped       → [{output:[...]}]
+      // 3. Wrapped in a key                     → {ideas:[...]} / {data:[...]}
+      let ideas: any[] = [];
+      if (Array.isArray(json)) {
+        if (json.length > 0 && json[0]?.output) {
+          ideas = json[0].output; // raw n8n envelope
+        } else {
+          ideas = json;           // already flat array
+        }
+      } else if (json?.ideas) {
+        ideas = json.ideas;
+      } else if (json?.data) {
+        ideas = json.data;
+      }
+
+      console.log('[IdeasModal] parsed ideas:', ideas.length, ideas);
+      setIdeas(ideas);
     } catch (err: any) {
       toast.error(err.message || (isAr ? 'فشل جلب الأفكار' : 'Failed to fetch ideas'));
     } finally {
