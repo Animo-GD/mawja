@@ -18,7 +18,43 @@ export async function POST() {
       );
     }
 
-    // Fetch business profile so the agent has full context
+    // ── Credit check & deduction ──────────────────────────────────────
+    const { data: priceRow } = await supabase
+      .from('service_prices')
+      .select('price')
+      .eq('service_name', 'idea_generation')
+      .single();
+    const cost = priceRow?.price ?? 5;
+
+    if (session.id !== 'demo') {
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('credits')
+        .eq('id', session.id)
+        .single();
+
+      if ((userRow?.credits ?? 0) < cost) {
+        return NextResponse.json(
+          { error: 'Insufficient credits. Please buy more credits to continue.' },
+          { status: 402 }
+        );
+      }
+
+      // Deduct credits
+      await supabase
+        .from('users')
+        .update({ credits: (userRow!.credits ?? 0) - cost })
+        .eq('id', session.id);
+
+      await supabase.from('credit_transactions').insert({
+        user_id: session.id,
+        amount: -cost,
+        type: 'spend',
+        description: 'Content idea generation',
+      });
+    }
+
+    // ── Fetch business profile for agent context ──────────────────────
     const { data: businessProfile } = await supabase
       .from('business')
       .select('*')
@@ -26,6 +62,7 @@ export async function POST() {
       .eq('is_active', true)
       .single();
 
+    // ── Call n8n webhook ──────────────────────────────────────────────
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -41,9 +78,16 @@ export async function POST() {
 
     const data = await response.json();
 
-    // n8n may return an array directly or wrap it in a key.
-    // Normalize to always return an array.
-    const ideas = Array.isArray(data) ? data : data.ideas ?? data.data ?? [data];
+    // ── Normalize response ────────────────────────────────────────────
+    // Handles: [{output:[...]}], [...], {ideas:[...]}, {data:[...]}
+    let ideas: any[];
+    if (Array.isArray(data) && data.length > 0 && data[0]?.output) {
+      ideas = data[0].output;
+    } else if (Array.isArray(data)) {
+      ideas = data;
+    } else {
+      ideas = data.ideas ?? data.data ?? [data];
+    }
 
     return NextResponse.json(ideas);
   } catch (error: any) {
@@ -54,4 +98,3 @@ export async function POST() {
     );
   }
 }
-

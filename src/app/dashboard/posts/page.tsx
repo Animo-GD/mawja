@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, Post } from '@/lib/api';
 import dynamic from 'next/dynamic';
-import { Loader2, Sparkles, Calendar, Trash2, Clock, CheckCircle, XCircle, Image as ImageIcon, FileText, Video, Save, Lightbulb, X, Copy, Download, Upload, Trash, Wand2 } from 'lucide-react';
+import { Loader2, Sparkles, Calendar, Trash2, Clock, CheckCircle, XCircle, Image as ImageIcon, FileText, Video, Save, Lightbulb, X, Copy, Download, Upload, Trash, Wand2, TrendingUp } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Toaster } from 'react-hot-toast';
 import { useLang } from '@/lib/LanguageContext';
@@ -17,28 +17,55 @@ const GeneratingCard = dynamic(() => import('@/components/GeneratingCard'), { ss
 const PLATFORMS = ['instagram', 'facebook', 'linkedin', 'x'] as const;
 const TONES     = ['formal', 'casual', 'sales'] as const;
 
-function IdeasModal({ isOpen, onClose, onSelect, platform, isAr }: { isOpen: boolean; onClose: () => void; onSelect: (idea: any) => void; platform: string; isAr: boolean }) {
+const LOADING_STEPS_EN = [
+  '🔍 Analyzing your business profile...',
+  '📈 Scanning latest trends...',
+  '🌍 Checking what\'s hot in your market...',
+  '💡 Crafting tailored ideas for you...',
+  '✨ Almost ready...',
+];
+const LOADING_STEPS_AR = [
+  '🔍 جارٍ تحليل ملف نشاطك التجاري...',
+  '📈 فحص أحدث الترندات...',
+  '🌍 ما الذي يتصدر السوق الآن...',
+  '💡 تصميم أفكار مخصصة لك...',
+  '✨ لحظات وتكون جاهزة...',
+];
+
+function IdeasModal({ isOpen, onClose, onSelect, isAr }: { isOpen: boolean; onClose: () => void; onSelect: (idea: any) => void; platform: string; isAr: boolean }) {
   const [ideas, setIdeas] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [stepIdx, setStepIdx] = useState(0);
 
   useEffect(() => {
     if (isOpen) {
+      setIdeas([]);
       handleFetch();
     }
   }, [isOpen]);
+
+  // Cycle through loading messages while waiting
+  useEffect(() => {
+    if (!loading) { setStepIdx(0); return; }
+    const steps = isAr ? LOADING_STEPS_AR : LOADING_STEPS_EN;
+    const id = setInterval(() => setStepIdx(i => (i + 1) % steps.length), 2200);
+    return () => clearInterval(id);
+  }, [loading, isAr]);
 
   const handleFetch = async () => {
     setLoading(true);
     try {
       const res = await fetch('/api/content/suggest', { method: 'POST' });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to fetch suggestions');
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 402) {
+        toast.error(json.error || (isAr ? 'رصيد غير كافٍ، يرجى شراء المزيد من الكريدت' : 'Not enough credits! Please buy more credits.'));
+        onClose();
+        return;
       }
-      const data = await res.json();
-      setIdeas(Array.isArray(data) ? data : []);
+      if (!res.ok) throw new Error(json.error || 'Failed to fetch suggestions');
+      setIdeas(Array.isArray(json) ? json : []);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to fetch ideas');
+      toast.error(err.message || (isAr ? 'فشل جلب الأفكار' : 'Failed to fetch ideas'));
     } finally {
       setLoading(false);
     }
@@ -46,9 +73,11 @@ function IdeasModal({ isOpen, onClose, onSelect, platform, isAr }: { isOpen: boo
 
   if (!isOpen) return null;
 
+  const steps = isAr ? LOADING_STEPS_AR : LOADING_STEPS_EN;
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600 }}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 620 }}>
         <div className="modal-header">
           <h2 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Lightbulb size={20} style={{ color: 'var(--color-warning)' }} />
@@ -56,13 +85,52 @@ function IdeasModal({ isOpen, onClose, onSelect, platform, isAr }: { isOpen: boo
           </h2>
           <button className="btn-icon" onClick={onClose}><X size={18} /></button>
         </div>
-        <div style={{ maxHeight: '60vh', overflowY: 'auto', padding: '16px' }}>
+        <div style={{ maxHeight: '62vh', overflowY: 'auto', padding: '16px' }}>
           {loading ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 40 }}>
-              <Loader2 className="spin" size={32} style={{ color: 'var(--color-accent)' }} />
-              <p style={{ fontSize: '0.9rem', color: 'var(--color-text-secondary)' }}>
-                {isAr ? 'جارٍ البحث عن أفكار مميزة...' : 'Finding great ideas for you...'}
-              </p>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, padding: '48px 24px', textAlign: 'center' }}>
+              {/* Pulsing lightbulb */}
+              <div style={{ position: 'relative', width: 64, height: 64 }}>
+                <div style={{
+                  position: 'absolute', inset: 0, borderRadius: '50%',
+                  background: 'var(--color-warning)', opacity: 0.15,
+                  animation: 'ideasPulse 1.6s ease-in-out infinite',
+                }} />
+                <div style={{
+                  position: 'absolute', inset: 8, borderRadius: '50%',
+                  background: 'var(--color-warning)', opacity: 0.25,
+                  animation: 'ideasPulse 1.6s ease-in-out infinite 0.3s',
+                }} />
+                <div style={{
+                  position: 'absolute', inset: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Lightbulb size={28} style={{ color: 'var(--color-warning)' }} />
+                </div>
+              </div>
+              {/* Cycling message */}
+              <div style={{ minHeight: 48 }}>
+                <p style={{
+                  fontSize: '0.95rem', fontWeight: 600,
+                  color: 'var(--color-text-primary)',
+                  animation: 'ideasFade 0.5s ease',
+                  key: stepIdx,
+                }}>
+                  {steps[stepIdx]}
+                </p>
+                <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
+                  {isAr ? 'قد تستغرق العملية 10-30 ثانية' : 'This may take 10–30 seconds'}
+                </p>
+              </div>
+              {/* Progress dots */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                {steps.map((_, i) => (
+                  <div key={i} style={{
+                    width: 6, height: 6, borderRadius: '50%',
+                    background: i === stepIdx ? 'var(--color-accent)' : 'var(--color-border)',
+                    transition: 'background 0.3s ease',
+                  }} />
+                ))}
+              </div>
             </div>
           ) : ideas.length === 0 ? (
             <div className="empty-state">
@@ -73,15 +141,16 @@ function IdeasModal({ isOpen, onClose, onSelect, platform, isAr }: { isOpen: boo
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {ideas.map((idea, idx) => (
-                <div 
-                  key={idea.id || idx} 
-                  className="card-flat" 
-                  style={{ 
-                    cursor: 'pointer', 
-                    border: '1px solid var(--color-border)', 
+                <div
+                  key={idea.id || idx}
+                  className="card-flat"
+                  style={{
+                    cursor: 'pointer',
+                    border: '1px solid var(--color-border)',
                     padding: '16px',
                     transition: 'all 0.2s ease',
-                    background: 'var(--color-bg-warm)'
+                    background: 'var(--color-bg-warm)',
+                    animation: `slideUp 0.3s ease ${idx * 0.06}s both`,
                   }}
                   onMouseEnter={e => {
                     e.currentTarget.style.borderColor = 'var(--color-accent)';
@@ -93,12 +162,23 @@ function IdeasModal({ isOpen, onClose, onSelect, platform, isAr }: { isOpen: boo
                   }}
                   onClick={() => onSelect(idea)}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                    <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-primary)', margin: 0 }}>{idea.title}</h3>
-                    <span className="badge" style={{ textTransform: 'capitalize' }}>{idea.platform}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 12 }}>
+                    <h3 style={{ fontSize: '0.97rem', fontWeight: 700, color: 'var(--color-text-primary)', margin: 0, lineHeight: 1.4 }}>{idea.title}</h3>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      {idea.content_type && (
+                        <span className="badge badge-gray" style={{ textTransform: 'capitalize', fontSize: '0.72rem' }}>{idea.content_type}</span>
+                      )}
+                      <span className="badge" style={{ textTransform: 'capitalize', fontSize: '0.72rem' }}>{idea.platform}</span>
+                    </div>
                   </div>
-                  <p style={{ fontSize: '0.88rem', color: 'var(--color-text-secondary)', margin: 0, lineHeight: 1.5 }}>{idea.description}</p>
-                  <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-accent)', fontSize: '0.82rem', fontWeight: 600 }}>
+                  <p style={{ fontSize: '0.86rem', color: 'var(--color-text-secondary)', margin: 0, lineHeight: 1.55 }}>{idea.description}</p>
+                  {idea.trend && (
+                    <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
+                      <TrendingUp size={11} />
+                      <span>{idea.trend}</span>
+                    </div>
+                  )}
+                  <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-accent)', fontSize: '0.82rem', fontWeight: 600 }}>
                     <Wand2 size={12} />
                     {isAr ? 'استخدم هذه الفكرة' : 'Use this idea'}
                   </div>
@@ -111,13 +191,18 @@ function IdeasModal({ isOpen, onClose, onSelect, platform, isAr }: { isOpen: boo
           <button className="btn btn-secondary" onClick={onClose}>{isAr ? 'إغلاق' : 'Close'}</button>
           <button className="btn btn-primary" onClick={handleFetch} disabled={loading}>
             {loading ? <Loader2 size={14} className="spin" /> : <Lightbulb size={14} />}
-            {isAr ? 'أفكار أخرى' : 'Get More Ideas'}
+            {isAr ? 'أفكار جديدة' : 'Get More Ideas'}
           </button>
         </div>
+        <style>{`
+          @keyframes ideasPulse { 0%,100% { transform: scale(1); opacity: 0.15; } 50% { transform: scale(1.15); opacity: 0.3; } }
+          @keyframes ideasFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        `}</style>
       </div>
     </div>
   );
 }
+
 
 function StatusBadge({ status, t }: { status: Post['status']; t: (k: TranslationKey) => string }) {
   if (status === 'draft') return <span className="badge badge-gray"><FileText size={10} style={{ marginInlineEnd: 3 }} />Draft</span>;
