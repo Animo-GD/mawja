@@ -454,9 +454,9 @@ export default function PostsPage() {
   const handleSelectIdea = (idea: any) => {
     setForm(f => ({ 
       ...f, 
-      topic: idea.title, 
-      product_notes: idea.description,
-      platform: idea.platform || f.platform 
+      topic: idea.topic || idea.title,
+      product_notes: idea.product_notes || idea.description,
+      platform: idea.platform || f.platform,
     }));
     setShowIdeasModal(false);
     toast.success(isAr ? 'تم تطبيق الفكرة!' : 'Idea applied!');

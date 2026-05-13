@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
+import { supabase } from '@/lib/supabase';
 
 export async function POST() {
   try {
@@ -17,10 +18,21 @@ export async function POST() {
       );
     }
 
+    // Fetch business profile so the agent has full context
+    const { data: businessProfile } = await supabase
+      .from('business')
+      .select('*')
+      .eq('user_id', session.id)
+      .eq('is_active', true)
+      .single();
+
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: session.id }),
+      body: JSON.stringify({
+        user_id: session.id,
+        business_profile: businessProfile ?? null,
+      }),
     });
 
     if (!response.ok) {
@@ -42,3 +54,4 @@ export async function POST() {
     );
   }
 }
+
