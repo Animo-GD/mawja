@@ -246,7 +246,7 @@ function StudioContent() {
   };
 
   // ── Mouse events ──────────────────────────────────────────────────
-  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     if (!isLoaded) return;
     const pos = getCanvasPos(e);
 
@@ -262,7 +262,7 @@ function StudioContent() {
     }
   };
 
-  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onMouseMove = (e: React.MouseEvent<HTMLElement>) => {
     const pos = getCanvasPos(e);
 
     if (draggingId) {
