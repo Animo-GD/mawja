@@ -362,7 +362,7 @@ function StudioContent() {
     }
   };
 
-  // ── Erase logic (AI Crop & Stitch) ──────────────────────────────
+  // ── Erase logic (AI – Full Image) ────────────────────────────────
   const handleEraseSelection = async () => {
     if (!selection || !canvasRef.current || selection.width < 1 || selection.height < 1) return;
     
@@ -372,21 +372,7 @@ function StudioContent() {
     saveSnapshot();
     setIsErasing(true);
 
-    const padding = 40;
-    const cropX = Math.max(0, selection.x - padding);
-    const cropY = Math.max(0, selection.y - padding);
-    const cropW = Math.min(canvas.width - cropX, selection.width + padding * 2);
-    const cropH = Math.min(canvas.height - cropY, selection.height + padding * 2);
-
-    const offCanvas = document.createElement('canvas');
-    offCanvas.width = cropW;
-    offCanvas.height = cropH;
-    const offCtx = offCanvas.getContext('2d')!;
-    
-    offCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-    const croppedBase64 = offCanvas.toDataURL('image/png');
-    
-    // Save full canvas state so the background task can stitch it even if component unmounts
+    // Send the full canvas image to the AI
     const fullCanvasBase64 = canvas.toDataURL('image/png');
 
     const processTask = async () => {
@@ -395,14 +381,12 @@ function StudioContent() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            image: croppedBase64,
+            image: fullCanvasBase64,
             selection: {
-              x: Math.round(selection.x - cropX),
-              y: Math.round(selection.y - cropY),
+              x: Math.round(selection.x),
+              y: Math.round(selection.y),
               width: Math.round(selection.width),
               height: Math.round(selection.height),
-              full_x: Math.round(selection.x),
-              full_y: Math.round(selection.y)
             }
           })
         });
@@ -414,34 +398,12 @@ function StudioContent() {
 
         const { result } = await response.json();
 
-        return new Promise<string>((resolve, reject) => {
-          const origImg = new window.Image();
-          origImg.crossOrigin = 'anonymous';
-          origImg.onload = () => {
-            const stitchCanvas = document.createElement('canvas');
-            stitchCanvas.width = origImg.width;
-            stitchCanvas.height = origImg.height;
-            const stitchCtx = stitchCanvas.getContext('2d')!;
-            stitchCtx.drawImage(origImg, 0, 0);
+        // Cache the result
+        try {
+          localStorage.setItem(`studio_cache_${mediaUrl}`, result);
+        } catch (e) {}
 
-            const patchImg = new window.Image();
-            patchImg.crossOrigin = 'anonymous';
-            patchImg.onload = () => {
-              stitchCtx.drawImage(patchImg, cropX, cropY, cropW, cropH);
-              const finalBase64 = stitchCanvas.toDataURL('image/png', 0.8);
-              
-              try {
-                localStorage.setItem(`studio_cache_${mediaUrl}`, finalBase64);
-              } catch (e) {}
-              
-              resolve(finalBase64);
-            };
-            patchImg.onerror = () => reject(new Error('Failed to load AI patch'));
-            patchImg.src = result;
-          };
-          origImg.onerror = () => reject(new Error('Failed to load original image'));
-          origImg.src = fullCanvasBase64;
-        });
+        return result;
       } catch (err) {
         throw err;
       }
@@ -453,15 +415,14 @@ function StudioContent() {
     try {
       const finalBase64 = await task;
       
-      // If we are still mounted, update the canvas
       if (canvasRef.current) {
         const finalImg = new window.Image();
         finalImg.onload = () => {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(finalImg, 0, 0);
+          ctx.drawImage(finalImg, 0, 0, canvas.width, canvas.height);
           setSelection(null);
           setIsErasing(false);
-          toast.success('AI patch applied!');
+          toast.success('AI Erase applied!');
         };
         finalImg.onerror = () => setIsErasing(false);
         finalImg.src = finalBase64;
@@ -477,6 +438,7 @@ function StudioContent() {
       setIsErasing(false);
     }
   };
+
 
   // ── Commit text ───────────────────────────────────────────────────
   const commitText = () => {
