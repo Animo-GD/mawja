@@ -3,10 +3,21 @@
 import { useRef, useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useLang } from '@/lib/LanguageContext';
-import { MousePointer2, Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon, RotateCcw } from 'lucide-react';
+import { MousePointer2, Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon, RotateCcw, Trash2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 type Tool = 'select' | 'text';
+
+interface TextObject {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  color: string;
+  fontFamily: string;
+  fontScript: 'arabic' | 'english';
+}
 
 const ARABIC_FONTS = [
   { name: 'Cairo', label: 'Cairo | قاهرة' },
@@ -78,7 +89,7 @@ function StudioContent() {
   const [isErasing, setIsErasing] = useState(false);
 
   // Undo
-  const [undoStack, setUndoStack] = useState<ImageData[]>([]);
+  const [undoStack, setUndoStack] = useState<{ imageData: ImageData; texts: TextObject[] }[]>([]);
 
   // Text tool state
   const [showTextModal, setShowTextModal] = useState(false);
@@ -88,6 +99,12 @@ function StudioContent() {
   const [textPos, setTextPos] = useState<{ x: number; y: number } | null>(null);
   const [fontFamily, setFontFamily] = useState('Inter');
   const [fontScript, setFontScript] = useState<'arabic' | 'english'>('english');
+
+  // Multi-text state
+  const [texts, setTexts] = useState<TextObject[]>([]);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
 
   const isVideo = /\.(mp4|webm|ogg|mov)(\?|$)/i.test(mediaUrl);
 
@@ -129,10 +146,10 @@ function StudioContent() {
           setIsErasing(true);
           if (cachedData) {
              const cachedImg = new window.Image();
-             cachedImg.onload = () => { ctx.drawImage(cachedImg, 0, 0); setIsLoaded(true); setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]); };
+             cachedImg.onload = () => { ctx.drawImage(cachedImg, 0, 0); setIsLoaded(true); setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]); };
              cachedImg.src = cachedData;
           } else {
-             ctx.drawImage(img, 0, 0); setIsLoaded(true); setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+             ctx.drawImage(img, 0, 0); setIsLoaded(true); setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
           }
 
           activeTask.then(finalBase64 => {
@@ -154,14 +171,14 @@ function StudioContent() {
           cachedImg.onload = () => {
             ctx.drawImage(cachedImg, 0, 0);
             setIsLoaded(true);
-            setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+            setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
             toast.success('Work restored from cache');
           };
           cachedImg.src = cachedData;
         } else {
           ctx.drawImage(img, 0, 0);
           setIsLoaded(true);
-          setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+          setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
         }
       };
       img.onerror = () => toast.error('Failed to load image');
@@ -178,7 +195,7 @@ function StudioContent() {
     if (!canvas) return;
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    setUndoStack(prev => [...prev.slice(-19), data]);
+    setUndoStack(prev => [...prev.slice(-19), { imageData: data, texts: [...texts] }]);
     
     // Persist to localStorage
     try {
@@ -186,7 +203,7 @@ function StudioContent() {
     } catch (e) {
       console.warn('Storage limit reached, caching disabled for this step');
     }
-  }, [mediaUrl]);
+  }, [mediaUrl, texts]);
 
   const resetToOriginal = () => {
     if (!confirm('Discard all changes and reset to original?')) return;
@@ -200,7 +217,8 @@ function StudioContent() {
     const newStack = undoStack.slice(0, -1);
     setUndoStack(newStack);
     const lastState = newStack[newStack.length - 1];
-    canvas.getContext('2d', { willReadFrequently: true })!.putImageData(lastState, 0, 0);
+    canvas.getContext('2d', { willReadFrequently: true })!.putImageData(lastState.imageData, 0, 0);
+    setTexts(lastState.texts);
     
     // Update cache to match undo state
     try {
@@ -233,18 +251,30 @@ function StudioContent() {
     const pos = getCanvasPos(e);
 
     if (tool === 'select') {
+      setSelectedTextId(null);
       setSelectionStart(pos);
       setSelection({ x: pos.x, y: pos.y, width: 0, height: 0 });
       setIsSelecting(true);
     } else if (tool === 'text') {
+      setSelectedTextId(null);
       setTextPos(pos);
       setShowTextModal(true);
     }
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isSelecting || !selectionStart || tool !== 'select') return;
     const pos = getCanvasPos(e);
+
+    if (draggingId) {
+      setTexts(prev => prev.map(t => 
+        t.id === draggingId 
+          ? { ...t, x: pos.x - (dragStart?.x || 0), y: pos.y - (dragStart?.y || 0) } 
+          : t
+      ));
+      return;
+    }
+
+    if (!isSelecting || !selectionStart || tool !== 'select') return;
     
     setSelection({
       x: Math.max(0, Math.min(canvasRef.current!.width, Math.min(selectionStart.x, pos.x))),
@@ -256,6 +286,8 @@ function StudioContent() {
 
   const onMouseUp = () => {
     setIsSelecting(false);
+    setDraggingId(null);
+    setDragStart(null);
   };
 
   // ── Erase logic (Fast Local Fallback) ───────────────────────────
@@ -449,25 +481,35 @@ function StudioContent() {
   // ── Commit text ───────────────────────────────────────────────────
   const commitText = () => {
     if (!textPos || !pendingText.trim()) { setShowTextModal(false); return; }
-    const ctx = canvasRef.current!.getContext('2d', { willReadFrequently: true })!;
-    saveSnapshot();
     
-    document.fonts.ready.then(() => {
-      ctx.font = `bold ${fontSize}px "${fontFamily}", sans-serif`;
-      ctx.fillStyle = textColor;
-      ctx.textBaseline = 'middle';
-      
-      if (fontScript === 'arabic') {
-        const metrics = ctx.measureText(pendingText);
-        ctx.fillText(pendingText, textPos!.x - metrics.width, textPos!.y);
-      } else {
-        ctx.fillText(pendingText, textPos!.x, textPos!.y);
-      }
-    });
+    const newText: TextObject = {
+      id: Math.random().toString(36).substr(2, 9),
+      text: pendingText,
+      x: textPos.x,
+      y: textPos.y,
+      fontSize: fontSize,
+      color: textColor,
+      fontFamily: fontFamily,
+      fontScript: fontScript
+    };
+
+    setTexts(prev => [...prev, newText]);
+    setSelectedTextId(newText.id);
     
     setPendingText('');
     setShowTextModal(false);
     setTextPos(null);
+  };
+
+  const updateSelectedText = (updates: Partial<TextObject>) => {
+    if (!selectedTextId) return;
+    setTexts(prev => prev.map(t => t.id === selectedTextId ? { ...t, ...updates } : t));
+  };
+
+  const deleteSelectedText = () => {
+    if (!selectedTextId) return;
+    setTexts(prev => prev.filter(t => t.id !== selectedTextId));
+    setSelectedTextId(null);
   };
 
   // ── Save ──────────────────────────────────────────────────────────
@@ -475,7 +517,30 @@ function StudioContent() {
     const canvas = canvasRef.current;
     if (!canvas || !isLoaded) return;
     setIsSaving(true);
-    canvas.toBlob(async (blob) => {
+
+    // Create a temporary canvas to merge image and text
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const tctx = tempCanvas.getContext('2d')!;
+    
+    // 1. Draw base image
+    tctx.drawImage(canvas, 0, 0);
+
+    // 2. Draw all text objects
+    texts.forEach(t => {
+      tctx.font = `bold ${t.fontSize}px "${t.fontFamily}", sans-serif`;
+      tctx.fillStyle = t.color;
+      tctx.textBaseline = 'middle';
+      if (t.fontScript === 'arabic') {
+        const metrics = tctx.measureText(t.text);
+        tctx.fillText(t.text, t.x - metrics.width, t.y);
+      } else {
+        tctx.fillText(t.text, t.x, t.y);
+      }
+    });
+
+    tempCanvas.toBlob(async (blob) => {
       if (!blob) { toast.error('Export failed'); setIsSaving(false); return; }
       try {
         const fd = new FormData();
@@ -673,6 +738,32 @@ function StudioContent() {
               : <><Save size={15} style={{ marginInlineEnd: 8 }} />Save to Gallery</>}
           </button>
         </div>
+
+        {/* Selected Text Controls */}
+        {selectedTextId && tool === 'text' && (
+          <div className="card-flat" style={{ border: '1px solid var(--color-border)', borderRadius: 14, padding: 15, display: 'flex', flexDirection: 'column', gap: 12, marginTop: 15, background: 'rgba(99,102,241,0.03)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '0.85rem', fontWeight: 600, margin: 0 }}>Edit Text</h3>
+              <button onClick={deleteSelectedText} style={{ border: 'none', background: 'none', color: '#ef4444', cursor: 'pointer', padding: 4 }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+            
+            <input 
+              className="input-flat" 
+              value={texts.find(t => t.id === selectedTextId)?.text || ''} 
+              onChange={e => updateSelectedText({ text: e.target.value })}
+              style={{ width: '100%', fontSize: '0.8rem', padding: '6px 10px' }}
+              placeholder="Text content..."
+            />
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input type="color" value={texts.find(t => t.id === selectedTextId)?.color || '#ffffff'} onChange={e => updateSelectedText({ color: e.target.value })}
+                style={{ width: 30, height: 30, border: 'none', padding: 0, background: 'none', cursor: 'pointer' }} />
+              <input type="range" min={12} max={200} value={texts.find(t => t.id === selectedTextId)?.fontSize || 48} onChange={e => updateSelectedText({ fontSize: +e.target.value })} style={{ flex: 1 }} />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Canvas Area ── */}
@@ -684,15 +775,20 @@ function StudioContent() {
           </div>
         )}
 
-        <div style={{ 
-          position: 'relative', 
-          display: isLoaded ? 'inline-block' : 'none', 
-          maxWidth: '100%', 
-          maxHeight: '100%',
-          boxShadow: '0 0 20px rgba(0,0,0,0.3)',
-          borderRadius: 8,
-          overflow: 'hidden'
-        }}>
+        <div 
+          style={{ 
+            position: 'relative', 
+            display: isLoaded ? 'inline-block' : 'none', 
+            maxWidth: '100%', 
+            maxHeight: '100%',
+            boxShadow: '0 0 20px rgba(0,0,0,0.3)',
+            borderRadius: 8,
+            overflow: 'hidden'
+          }}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onMouseLeave={onMouseUp}
+        >
           <canvas
             ref={canvasRef}
             style={{
@@ -705,10 +801,51 @@ function StudioContent() {
               touchAction: 'none',
             }}
             onMouseDown={onMouseDown}
-            onMouseMove={onMouseMove}
-            onMouseUp={onMouseUp}
-            onMouseLeave={onMouseUp}
           />
+
+          {/* Text Objects Overlay */}
+          {texts.map(t => {
+            const isSelected = t.id === selectedTextId;
+            return (
+              <div
+                key={t.id}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  setSelectedTextId(t.id);
+                  setTool('text');
+                  setDraggingId(t.id);
+                  const rect = canvasRef.current!.getBoundingClientRect();
+                  const scaleX = canvasRef.current!.width / rect.width;
+                  const scaleY = canvasRef.current!.height / rect.height;
+                  setDragStart({
+                    x: (e.clientX - rect.left) * scaleX - t.x,
+                    y: (e.clientY - rect.top) * scaleY - t.y
+                  });
+                }}
+                style={{
+                  position: 'absolute',
+                  left: `${(t.x / canvasRef.current!.width) * 100}%`,
+                  top: `${(t.y / canvasRef.current!.height) * 100}%`,
+                  transform: t.fontScript === 'arabic' ? 'translateX(-100%) translateY(-50%)' : 'translateY(-50%)',
+                  color: t.color,
+                  fontSize: `${(t.fontSize / canvasRef.current!.width) * (containerRef.current?.offsetWidth || 0)}px`, // Responsive size
+                  fontFamily: `"${t.fontFamily}", sans-serif`,
+                  fontWeight: 'bold',
+                  cursor: draggingId === t.id ? 'grabbing' : 'grab',
+                  userSelect: 'none',
+                  whiteSpace: 'nowrap',
+                  padding: '4px 8px',
+                  border: isSelected ? '2px solid #6366f1' : '2px solid transparent',
+                  borderRadius: 4,
+                  background: isSelected ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+                  zIndex: isSelected ? 10 : 5,
+                  pointerEvents: isErasing ? 'none' : 'auto'
+                }}
+              >
+                {t.text}
+              </div>
+            );
+          })}
 
           {selection && canvasRef.current && (
             <div style={{
