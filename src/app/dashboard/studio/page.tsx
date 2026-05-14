@@ -263,6 +263,110 @@ function StudioContent() {
     setIsSelecting(false);
   };
 
+  // ── Erase logic (Fast Local Fallback) ───────────────────────────
+  const handleLocalErase = () => {
+    if (!selection || !canvasRef.current || selection.width < 1 || selection.height < 1) return;
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    
+    saveSnapshot();
+
+    try {
+      const borderSize = Math.max(10, Math.round(Math.min(selection.width, selection.height) * 0.2));
+      const sampleX = Math.max(0, selection.x - borderSize);
+      const sampleY = Math.max(0, selection.y - borderSize);
+      const sampleW = Math.min(canvas.width - sampleX, selection.width + borderSize * 2);
+      const sampleH = Math.min(canvas.height - sampleY, selection.height + borderSize * 2);
+      
+      const surroundingData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
+      const borderPixels: [number, number, number][] = [];
+      const relSelX = selection.x - sampleX;
+      const relSelY = selection.y - sampleY;
+      
+      for (let y = 0; y < sampleH; y++) {
+        for (let x = 0; x < sampleW; x++) {
+          const isAtEdge = x < 3 || y < 3 || x > sampleW - 4 || y > sampleH - 4;
+          const insideSel =
+            x >= relSelX && x < relSelX + selection.width &&
+            y >= relSelY && y < relSelY + selection.height;
+            
+          if (!insideSel || isAtEdge) {
+            const idx = (y * sampleW + x) * 4;
+            borderPixels.push([
+              surroundingData.data[idx],
+              surroundingData.data[idx + 1],
+              surroundingData.data[idx + 2],
+            ]);
+          }
+        }
+      }
+      
+      let avgR = 255, avgG = 255, avgB = 255;
+      if (borderPixels.length > 0) {
+        avgR = Math.round(borderPixels.reduce((s, p) => s + p[0], 0) / borderPixels.length);
+        avgG = Math.round(borderPixels.reduce((s, p) => s + p[1], 0) / borderPixels.length);
+        avgB = Math.round(borderPixels.reduce((s, p) => s + p[2], 0) / borderPixels.length);
+      }
+      
+      const topLeft = sampleCorner(ctx, selection.x - 2, selection.y - 2, canvas.width, canvas.height);
+      const topRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y - 2, canvas.width, canvas.height);
+      const bottomLeft = sampleCorner(ctx, selection.x - 2, selection.y + selection.height + 2, canvas.width, canvas.height);
+      const bottomRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y + selection.height + 2, canvas.width, canvas.height);
+      
+      const fillW = Math.ceil(selection.width);
+      const fillH = Math.ceil(selection.height);
+      const fillData = ctx.createImageData(fillW, fillH);
+      
+      for (let fy = 0; fy < fillH; fy++) {
+        for (let fx = 0; fx < fillW; fx++) {
+          const tx = fx / selection.width;
+          const ty = fy / selection.height;
+          
+          const r = bilinear(topLeft[0], topRight[0], bottomLeft[0], bottomRight[0], tx, ty);
+          const g = bilinear(topLeft[1], topRight[1], bottomLeft[1], bottomRight[1], tx, ty);
+          const b = bilinear(topLeft[2], topRight[2], bottomLeft[2], bottomRight[2], tx, ty);
+          
+          const idx = (fy * fillW + fx) * 4;
+          // Mix 70% interpolated, 30% average for noise reduction
+          fillData.data[idx]     = Math.round(r * 0.7 + avgR * 0.3);
+          fillData.data[idx + 1] = Math.round(g * 0.7 + avgG * 0.3);
+          fillData.data[idx + 2] = Math.round(b * 0.7 + avgB * 0.3);
+          fillData.data[idx + 3] = 255;
+        }
+      }
+      
+      ctx.putImageData(fillData, Math.round(selection.x), Math.round(selection.y));
+      
+      // Edge blending
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      for (let i = 6; i > 0; i--) {
+        ctx.globalAlpha = 0.1;
+        ctx.fillStyle = `rgb(${avgR},${avgG},${avgB})`;
+        ctx.filter = 'blur(2px)';
+        ctx.fillRect(
+          selection.x - i * 0.5,
+          selection.y - i * 0.5,
+          selection.width + i,
+          selection.height + i
+        );
+      }
+      ctx.restore();
+      
+      setSelection(null);
+      
+      try {
+        localStorage.setItem(`studio_cache_${mediaUrl}`, canvas.toDataURL('image/png', 0.8));
+      } catch (e) {}
+
+      toast.success('Local Erase applied!');
+    } catch (err) {
+      toast.error('Local Erase failed');
+      console.error(err);
+    }
+  };
+
   // ── Erase logic (AI Crop & Stitch) ──────────────────────────────
   const handleEraseSelection = async () => {
     if (!selection || !canvasRef.current || selection.width < 1 || selection.height < 1) return;
@@ -475,16 +579,27 @@ function StudioContent() {
                 Selection: {Math.round(selection.width)} × {Math.round(selection.height)}px
               </div>
             )}
-            <button
-              className="btn btn-danger"
-              onClick={handleEraseSelection}
-              disabled={!selection || isErasing || selection.width < 2}
-              style={{ width: '100%', justifyContent: 'center' }}
-            >
-              {isErasing
-                ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 6 }} />Erasing…</>
-                : <><Eraser size={14} style={{ marginInlineEnd: 6 }} />Erase Selection</>}
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button
+                className="btn btn-danger"
+                onClick={handleEraseSelection}
+                disabled={!selection || isErasing || selection.width < 2}
+                style={{ width: '100%', justifyContent: 'center', fontWeight: 600 }}
+              >
+                {isErasing
+                  ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 6 }} />Processing…</>
+                  : <><Eraser size={14} style={{ marginInlineEnd: 6 }} />✨ AI Erase</>}
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={handleLocalErase}
+                disabled={!selection || isErasing || selection.width < 2}
+                style={{ width: '100%', justifyContent: 'center' }}
+                title="Fast, lower-quality erase that runs locally in your browser"
+              >
+                <Eraser size={14} style={{ marginInlineEnd: 6 }} /> Fast Erase (Local)
+              </button>
+            </div>
             {selection && (
               <button
                 className="btn btn-secondary"
