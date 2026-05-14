@@ -157,7 +157,7 @@ function StudioContent() {
              finalImg.onload = () => {
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.drawImage(finalImg, 0, 0);
-                setUndoStack(prev => [...prev.slice(-19), ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+                setUndoStack(prev => [...prev.slice(-19), { imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: prev.length > 0 ? prev[prev.length - 1].texts : [] }]);
                 toast.success('Background task finished!');
                 setIsErasing(false);
              };
