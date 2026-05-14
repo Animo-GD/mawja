@@ -1,8 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Player, PlayerRef } from '@remotion/player';
-import { GeneratingComposition } from './GeneratingComposition';
 
 const STAGES = [
   'Analyzing topic…',
@@ -21,7 +19,6 @@ interface Props {
 }
 
 export default function GeneratingOverlay({ jobId, onComplete, onError }: Props) {
-  const playerRef = useRef<PlayerRef>(null);
   const [stage, setStage] = useState(0);
   const [elapsed, setElapsed] = useState(0);
 
@@ -94,20 +91,16 @@ export default function GeneratingOverlay({ jobId, onComplete, onError }: Props)
         WebkitBackdropFilter: 'blur(8px)',
       }}
     >
-      {/* Remotion Player */}
-      <div style={{ borderRadius: 16, overflow: 'hidden', width: 260, height: 260 }}>
-        <Player
-          ref={playerRef}
-          component={GeneratingComposition}
-          inputProps={{ stage }}
-          durationInFrames={900}   // 30s at 30fps — loops via CSS
-          compositionWidth={260}
-          compositionHeight={260}
-          fps={30}
-          style={{ width: '100%', height: '100%' }}
-          autoPlay
-          loop
-        />
+      {/* Simple CSS Spinner */}
+      <div style={{ borderRadius: 16, width: 80, height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{
+          width: 50,
+          height: 50,
+          border: '4px solid rgba(0,117,222,0.3)',
+          borderTopColor: '#0075de',
+          borderRadius: '50%',
+          animation: 'spin 1s linear infinite'
+        }} />
       </div>
 
       {/* Stage label */}
@@ -162,6 +155,10 @@ export default function GeneratingOverlay({ jobId, onComplete, onError }: Props)
         @keyframes pulse {
           0%, 100% { opacity: 0.2; transform: scale(0.8); }
           50%       { opacity: 1;   transform: scale(1.2); }
+        }
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
         }
       `}</style>
     </div>
