@@ -111,9 +111,10 @@ function StudioContent() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    const proxyUrl = `/api/studio/proxy-image?url=${encodeURIComponent(mediaUrl)}`;
     const loadImg = (src: string) => {
       const img = new window.Image();
-      img.crossOrigin = 'anonymous';
+      // No crossOrigin needed for same-origin proxy — prevents canvas tainting
       img.onload = () => {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
@@ -126,8 +127,6 @@ function StudioContent() {
 
         if (activeTask) {
           setIsErasing(true);
-          // If there's an active task, we just load the *current* image first
-          // so the user sees it, and then we wait for the task to finish.
           if (cachedData) {
              const cachedImg = new window.Image();
              cachedImg.onload = () => { ctx.drawImage(cachedImg, 0, 0); setIsLoaded(true); setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]); };
@@ -146,7 +145,7 @@ function StudioContent() {
                 setIsErasing(false);
              };
              finalImg.src = finalBase64;
-          }).catch(err => {
+          }).catch(() => {
              toast.error('Background task failed');
              setIsErasing(false);
           });
@@ -165,16 +164,12 @@ function StudioContent() {
           setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
         }
       };
-      img.onerror = () => {
-        if (src === mediaUrl) {
-          loadImg(`/api/studio/proxy-image?url=${encodeURIComponent(mediaUrl)}`);
-        } else {
-          toast.error('Failed to load image');
-        }
-      };
+      img.onerror = () => toast.error('Failed to load image');
       img.src = src;
     };
-    loadImg(mediaUrl);
+
+    // Always load through proxy to avoid canvas CORS tainting
+    loadImg(proxyUrl);
   }, [mediaUrl, isVideo]);
 
   // ── Helpers ───────────────────────────────────────────────────────
@@ -273,51 +268,53 @@ function StudioContent() {
     saveSnapshot();
 
     try {
-      // 1. Get average color of the perimeter
-      const p = 4; // 4 pixels padding
-      const sx = Math.max(0, selection.x - p);
-      const sy = Math.max(0, selection.y - p);
-      const sw = Math.min(canvas.width - sx, selection.width + p * 2);
-      const sh = Math.min(canvas.height - sy, selection.height + p * 2);
+      // 1. Get average color of pixels just outside the selection (4px border)
+      const p = 6;
+      const sx = Math.max(0, Math.round(selection.x) - p);
+      const sy = Math.max(0, Math.round(selection.y) - p);
+      const sw = Math.min(canvas.width - sx, Math.round(selection.width) + p * 2);
+      const sh = Math.min(canvas.height - sy, Math.round(selection.height) + p * 2);
       
-      const imgData = ctx.getImageData(sx, sy, sw, sh);
-      let r = 0, g = 0, b = 0, count = 0;
-      
-      const innerX = selection.x - sx;
-      const innerY = selection.y - sy;
-      
-      for (let y = 0; y < sh; y++) {
-        for (let x = 0; x < sw; x++) {
-          const isInside = x >= innerX && x < innerX + selection.width && y >= innerY && y < innerY + selection.height;
-          if (!isInside) {
-            const idx = (y * sw + x) * 4;
-            r += imgData.data[idx];
-            g += imgData.data[idx+1];
-            b += imgData.data[idx+2];
-            count++;
+      let avgR = 200, avgG = 200, avgB = 200; // neutral gray fallback
+      try {
+        const imgData = ctx.getImageData(sx, sy, sw, sh);
+        let r = 0, g = 0, b = 0, count = 0;
+        const innerX = Math.round(selection.x) - sx;
+        const innerY = Math.round(selection.y) - sy;
+        const innerW = Math.round(selection.width);
+        const innerH = Math.round(selection.height);
+        
+        for (let y = 0; y < sh; y++) {
+          for (let x = 0; x < sw; x++) {
+            const isInside = x >= innerX && x < innerX + innerW && y >= innerY && y < innerY + innerH;
+            if (!isInside) {
+              const idx = (y * sw + x) * 4;
+              // Only count if alpha > 0 and not suspiciously black (tainted canvas artifact)
+              if (imgData.data[idx + 3] > 128) {
+                r += imgData.data[idx];
+                g += imgData.data[idx + 1];
+                b += imgData.data[idx + 2];
+                count++;
+              }
+            }
           }
         }
+        if (count > 0) {
+          avgR = Math.round(r / count);
+          avgG = Math.round(g / count);
+          avgB = Math.round(b / count);
+        }
+      } catch (e) {
+        // Canvas tainted or getImageData failed — use neutral fallback
+        console.warn('getImageData failed (tainted canvas?), using fallback color');
       }
-      
-      const avgR = count > 0 ? Math.round(r / count) : 255;
-      const avgG = count > 0 ? Math.round(g / count) : 255;
-      const avgB = count > 0 ? Math.round(b / count) : 255;
 
-      // 2. Draw solid average color
-      ctx.fillStyle = `rgb(${avgR}, ${avgG}, ${avgB})`;
-      ctx.fillRect(selection.x, selection.y, selection.width, selection.height);
-      
-      // 3. Draw blurred overlapping borders to feather the edge
+      // 2. Draw solid average color — no ctx.filter (causes black artifacts)
       ctx.save();
+      ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
-      ctx.filter = 'blur(4px)';
-      ctx.globalAlpha = 0.8;
       ctx.fillStyle = `rgb(${avgR}, ${avgG}, ${avgB})`;
-      ctx.fillRect(selection.x - 2, selection.y - 2, selection.width + 4, selection.height + 4);
-      
-      ctx.filter = 'blur(8px)';
-      ctx.globalAlpha = 0.5;
-      ctx.fillRect(selection.x - 4, selection.y - 4, selection.width + 8, selection.height + 8);
+      ctx.fillRect(Math.round(selection.x), Math.round(selection.y), Math.round(selection.width), Math.round(selection.height));
       ctx.restore();
       
       setSelection(null);
