@@ -652,51 +652,33 @@ function StudioContent() {
 
         {/* Text input modal */}
         {showTextModal && (
-              
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)', zIndex: 10 }}>
+            <div style={{ background: '#fff', borderRadius: 14, padding: 24, display: 'flex', flexDirection: 'column', gap: 14, minWidth: 300, maxWidth: 400, boxShadow: '0 8px 40px rgba(0,0,0,0.18)' }}>
+              <p style={{ margin: 0, fontWeight: 600, color: '#111' }}>Add Text to Image</p>
+              <div style={{ fontSize: '0.75rem', color: '#888', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>Font: <strong>{fontFamily}</strong></span><span>·</span><span>{fontSize}px</span>
+              </div>
               <input
                 autoFocus
-                className="form-input"
+                style={{ border: '1px solid #e5e5e5', borderRadius: 8, padding: '10px 12px', fontSize: '1.05rem', fontFamily, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', outline: 'none', color: '#111' }}
                 placeholder={fontScript === 'arabic' ? 'اكتب النص هنا…' : 'Type your text…'}
                 value={pendingText}
                 onChange={e => setPendingText(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') commitText(); if (e.key === 'Escape') setShowTextModal(false); }}
-                style={{
-                  fontFamily,
-                  direction: fontScript === 'arabic' ? 'rtl' : 'ltr',
-                  textAlign: fontScript === 'arabic' ? 'right' : 'left',
-                  fontSize: '1.1rem',
-                }}
               />
-              
               {pendingText && (
-                <div style={{
-                  padding: '10px 14px',
-                  background: '#111',
-                  borderRadius: 8,
-                  fontFamily,
-                  fontSize: Math.min(fontSize, 32),
-                  color: textColor,
-                  direction: fontScript === 'arabic' ? 'rtl' : 'ltr',
-                  textAlign: fontScript === 'arabic' ? 'right' : 'left',
-                  overflow: 'hidden',
-                  whiteSpace: 'nowrap',
-                  textOverflow: 'ellipsis',
-                }}>
+                <div style={{ padding: '10px 14px', background: '#111', borderRadius: 8, fontFamily, fontSize: Math.min(fontSize, 32), color: textColor, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', textAlign: fontScript === 'arabic' ? 'right' : 'left', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
                   {pendingText}
                 </div>
               )}
-              
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={commitText}>
-                  <Check size={15} style={{ marginInlineEnd: 6 }} /> Place
-                </button>
-                <button className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => { setShowTextModal(false); setPendingText(''); }}>
-                  <X size={15} style={{ marginInlineEnd: 6 }} /> Cancel
-                </button>
+                <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={commitText}><Check size={15} style={{ marginInlineEnd: 6 }} /> Place</button>
+                <button className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => { setShowTextModal(false); setPendingText(''); }}><X size={15} style={{ marginInlineEnd: 6 }} /> Cancel</button>
               </div>
             </div>
           </div>
         )}
+
       </div>
     </div>
   );
