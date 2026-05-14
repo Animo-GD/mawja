@@ -3,7 +3,7 @@
 import { useRef, useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useLang } from '@/lib/LanguageContext';
-import { MousePointer2, Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon } from 'lucide-react';
+import { MousePointer2, Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon, RotateCcw } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 type Tool = 'select' | 'text';
@@ -115,9 +115,25 @@ function StudioContent() {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-        ctx.drawImage(img, 0, 0);
-        setIsLoaded(true);
-        setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+        
+        // Check for cached version
+        const cacheKey = `studio_cache_${mediaUrl}`;
+        const cachedData = localStorage.getItem(cacheKey);
+
+        if (cachedData) {
+          const cachedImg = new window.Image();
+          cachedImg.onload = () => {
+            ctx.drawImage(cachedImg, 0, 0);
+            setIsLoaded(true);
+            setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+            toast.success('Work restored from cache');
+          };
+          cachedImg.src = cachedData;
+        } else {
+          ctx.drawImage(img, 0, 0);
+          setIsLoaded(true);
+          setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+        }
       };
       img.onerror = () => {
         if (src === mediaUrl) {
@@ -136,16 +152,36 @@ function StudioContent() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-    setUndoStack(prev => [...prev.slice(-19), ctx.getImageData(0, 0, canvas.width, canvas.height)]);
-  }, []);
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    setUndoStack(prev => [...prev.slice(-19), data]);
+    
+    // Persist to localStorage
+    try {
+      localStorage.setItem(`studio_cache_${mediaUrl}`, canvas.toDataURL('image/png', 0.8));
+    } catch (e) {
+      console.warn('Storage limit reached, caching disabled for this step');
+    }
+  }, [mediaUrl]);
+
+  const resetToOriginal = () => {
+    if (!confirm('Discard all changes and reset to original?')) return;
+    localStorage.removeItem(`studio_cache_${mediaUrl}`);
+    window.location.reload();
+  };
 
   const undo = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || undoStack.length <= 1) return;
     const newStack = undoStack.slice(0, -1);
     setUndoStack(newStack);
-    canvas.getContext('2d', { willReadFrequently: true })!.putImageData(newStack[newStack.length - 1], 0, 0);
-  }, [undoStack]);
+    const lastState = newStack[newStack.length - 1];
+    canvas.getContext('2d', { willReadFrequently: true })!.putImageData(lastState, 0, 0);
+    
+    // Update cache to match undo state
+    try {
+      localStorage.setItem(`studio_cache_${mediaUrl}`, canvas.toDataURL('image/png', 0.8));
+    } catch (e) {}
+  }, [undoStack, mediaUrl]);
 
   const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current!;
@@ -197,7 +233,7 @@ function StudioContent() {
     setIsSelecting(false);
   };
 
-  // ── Erase logic (AI Webhook) ──────────────────────────────────────
+  // ── Erase logic (AI Crop & Stitch) ──────────────────────────────
   const handleEraseSelection = async () => {
     if (!selection || !canvasRef.current || selection.width < 1 || selection.height < 1) return;
     
@@ -208,20 +244,35 @@ function StudioContent() {
     setIsErasing(true);
 
     try {
-      // 1. Get the current canvas as base64
-      const base64Image = canvas.toDataURL('image/png');
+      // 1. Prepare a cropped version of the selection with padding for context
+      const padding = 40;
+      const cropX = Math.max(0, selection.x - padding);
+      const cropY = Math.max(0, selection.y - padding);
+      const cropW = Math.min(canvas.width - cropX, selection.width + padding * 2);
+      const cropH = Math.min(canvas.height - cropY, selection.height + padding * 2);
 
-      // 2. Call the AI API
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = cropW;
+      offCanvas.height = cropH;
+      const offCtx = offCanvas.getContext('2d')!;
+      
+      // Draw the region into the small off-screen canvas
+      offCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+      const croppedBase64 = offCanvas.toDataURL('image/png');
+
+      // 2. Call the AI API with only the crop
       const response = await fetch('/api/studio/erase', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image: base64Image,
+          image: croppedBase64, // Only the small patch!
           selection: {
-            x: Math.round(selection.x),
-            y: Math.round(selection.y),
+            x: Math.round(selection.x - cropX), // Local coordinates within the crop
+            y: Math.round(selection.y - cropY),
             width: Math.round(selection.width),
-            height: Math.round(selection.height)
+            height: Math.round(selection.height),
+            full_x: Math.round(selection.x), // Original coordinates if needed
+            full_y: Math.round(selection.y)
           }
         })
       });
@@ -233,18 +284,17 @@ function StudioContent() {
 
       const { result } = await response.json();
 
-      // 3. Apply the result (can be base64 or URL)
+      // 3. Stitch the cleaned patch back
       const newImg = new window.Image();
       newImg.crossOrigin = 'anonymous';
       newImg.onload = () => {
-        // Clear and draw the new AI-processed image
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(newImg, 0, 0);
+        // Draw the cleaned patch exactly over where we took it from
+        ctx.drawImage(newImg, cropX, cropY, cropW, cropH);
         setSelection(null);
-        toast.success('AI removed the text!');
+        toast.success('AI patch applied!');
       };
       newImg.onerror = () => {
-        throw new Error('Failed to load the AI-generated image');
+        throw new Error('Failed to load the AI-cleaned patch');
       };
       newImg.src = result;
 
@@ -292,6 +342,10 @@ function StudioContent() {
         fd.append('file', blob, 'studio-edit.png');
         const res = await fetch('/api/studio/save-image', { method: 'POST', body: fd });
         if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
+        
+        // Clear cache on success
+        localStorage.removeItem(`studio_cache_${mediaUrl}`);
+        
         toast.success('Saved to gallery!');
         router.push('/dashboard/gallery');
       } catch (err: any) {
@@ -453,6 +507,10 @@ function StudioContent() {
 
         {/* Actions */}
         <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <button className="btn btn-secondary" onClick={resetToOriginal} disabled={!isLoaded}
+            style={{ width: '100%', justifyContent: 'center' }}>
+            <RotateCcw size={15} style={{ marginInlineEnd: 8 }} /> Reset to Original
+          </button>
           <button className="btn btn-secondary" onClick={undo} disabled={undoStack.length <= 1}
             style={{ width: '100%', justifyContent: 'center' }}>
             <Undo2 size={15} style={{ marginInlineEnd: 8 }} /> Undo
