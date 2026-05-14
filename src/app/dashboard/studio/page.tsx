@@ -28,18 +28,19 @@ const ENGLISH_FONTS = [
 ];
 
 // Helper: sample average color of a 5x5 area at (x, y)
-function sampleCorner(ctx: CanvasRenderingContext2D, x: number, y: number): [number, number, number] {
-  const sx = Math.max(0, Math.round(x - 2));
-  const sy = Math.max(0, Math.round(y - 2));
+function sampleCorner(ctx: CanvasRenderingContext2D, x: number, y: number, canvasW: number, canvasH: number): [number, number, number] {
+  const sx = Math.max(0, Math.min(canvasW - 5, Math.round(x - 2)));
+  const sy = Math.max(0, Math.min(canvasH - 5, Math.round(y - 2)));
   try {
     const data = ctx.getImageData(sx, sy, 5, 5);
     let r = 0, g = 0, b = 0, count = 0;
     for (let i = 0; i < data.data.length; i += 4) {
       r += data.data[i]; g += data.data[i+1]; b += data.data[i+2]; count++;
     }
+    if (count === 0) return [255, 255, 255];
     return [Math.round(r/count), Math.round(g/count), Math.round(b/count)];
   } catch (e) {
-    return [128, 128, 128]; // Fallback
+    return [255, 255, 255]; // Fallback to white instead of gray
   }
 }
 
@@ -60,6 +61,7 @@ function StudioContent() {
   const mediaUrl = searchParams.get('media_url') || '';
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -112,7 +114,7 @@ function StudioContent() {
       img.onload = () => {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
-        const ctx = canvas.getContext('2d')!;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
         ctx.drawImage(img, 0, 0);
         setIsLoaded(true);
         setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
@@ -133,7 +135,7 @@ function StudioContent() {
   const saveSnapshot = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
     setUndoStack(prev => [...prev.slice(-19), ctx.getImageData(0, 0, canvas.width, canvas.height)]);
   }, []);
 
@@ -142,15 +144,25 @@ function StudioContent() {
     if (!canvas || undoStack.length <= 1) return;
     const newStack = undoStack.slice(0, -1);
     setUndoStack(newStack);
-    canvas.getContext('2d')!.putImageData(newStack[newStack.length - 1], 0, 0);
+    canvas.getContext('2d', { willReadFrequently: true })!.putImageData(newStack[newStack.length - 1], 0, 0);
   }, [undoStack]);
 
-  const getCanvasPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
+    
+    let clientX, clientY;
+    if ('touches' in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = (e as React.MouseEvent).clientX;
+      clientY = (e as React.MouseEvent).clientY;
+    }
+
     return {
-      x: (e.clientX - rect.left) * (canvas.width / rect.width),
-      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+      x: (clientX - rect.left) * (canvas.width / rect.width),
+      y: (clientY - rect.top) * (canvas.height / rect.height),
     };
   };
 
@@ -161,7 +173,7 @@ function StudioContent() {
 
     if (tool === 'select') {
       setSelectionStart(pos);
-      setSelection(null);
+      setSelection({ x: pos.x, y: pos.y, width: 0, height: 0 });
       setIsSelecting(true);
     } else if (tool === 'text') {
       setTextPos(pos);
@@ -172,9 +184,10 @@ function StudioContent() {
   const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isSelecting || !selectionStart || tool !== 'select') return;
     const pos = getCanvasPos(e);
+    
     setSelection({
-      x: Math.min(selectionStart.x, pos.x),
-      y: Math.min(selectionStart.y, pos.y),
+      x: Math.max(0, Math.min(canvasRef.current!.width, Math.min(selectionStart.x, pos.x))),
+      y: Math.max(0, Math.min(canvasRef.current!.height, Math.min(selectionStart.y, pos.y))),
       width: Math.abs(pos.x - selectionStart.x),
       height: Math.abs(pos.y - selectionStart.y),
     });
@@ -186,16 +199,16 @@ function StudioContent() {
 
   // ── Erase logic ───────────────────────────────────────────────────
   const handleEraseSelection = async () => {
-    if (!selection || !canvasRef.current) return;
+    if (!selection || !canvasRef.current || selection.width < 1 || selection.height < 1) return;
     
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
     
     saveSnapshot();
     setIsErasing(true);
 
     try {
-      const borderSize = Math.max(20, Math.round(Math.min(selection.width, selection.height) * 0.15));
+      const borderSize = Math.max(10, Math.round(Math.min(selection.width, selection.height) * 0.2));
       const sampleX = Math.max(0, selection.x - borderSize);
       const sampleY = Math.max(0, selection.y - borderSize);
       const sampleW = Math.min(canvas.width - sampleX, selection.width + borderSize * 2);
@@ -208,10 +221,12 @@ function StudioContent() {
       
       for (let y = 0; y < sampleH; y++) {
         for (let x = 0; x < sampleW; x++) {
+          const isAtEdge = x < 3 || y < 3 || x > sampleW - 4 || y > sampleH - 4;
           const insideSel =
             x >= relSelX && x < relSelX + selection.width &&
             y >= relSelY && y < relSelY + selection.height;
-          if (!insideSel) {
+            
+          if (!insideSel || isAtEdge) {
             const idx = (y * sampleW + x) * 4;
             borderPixels.push([
               surroundingData.data[idx],
@@ -222,19 +237,24 @@ function StudioContent() {
         }
       }
       
-      const avgR = Math.round(borderPixels.reduce((s, p) => s + p[0], 0) / borderPixels.length);
-      const avgG = Math.round(borderPixels.reduce((s, p) => s + p[1], 0) / borderPixels.length);
-      const avgB = Math.round(borderPixels.reduce((s, p) => s + p[2], 0) / borderPixels.length);
+      let avgR = 255, avgG = 255, avgB = 255;
+      if (borderPixels.length > 0) {
+        avgR = Math.round(borderPixels.reduce((s, p) => s + p[0], 0) / borderPixels.length);
+        avgG = Math.round(borderPixels.reduce((s, p) => s + p[1], 0) / borderPixels.length);
+        avgB = Math.round(borderPixels.reduce((s, p) => s + p[2], 0) / borderPixels.length);
+      }
       
-      const topLeft = sampleCorner(ctx, selection.x - 5, selection.y - 5);
-      const topRight = sampleCorner(ctx, selection.x + selection.width + 5, selection.y - 5);
-      const bottomLeft = sampleCorner(ctx, selection.x - 5, selection.y + selection.height + 5);
-      const bottomRight = sampleCorner(ctx, selection.x + selection.width + 5, selection.y + selection.height + 5);
+      const topLeft = sampleCorner(ctx, selection.x - 2, selection.y - 2, canvas.width, canvas.height);
+      const topRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y - 2, canvas.width, canvas.height);
+      const bottomLeft = sampleCorner(ctx, selection.x - 2, selection.y + selection.height + 2, canvas.width, canvas.height);
+      const bottomRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y + selection.height + 2, canvas.width, canvas.height);
       
-      const fillData = ctx.createImageData(Math.ceil(selection.width), Math.ceil(selection.height));
+      const fillW = Math.ceil(selection.width);
+      const fillH = Math.ceil(selection.height);
+      const fillData = ctx.createImageData(fillW, fillH);
       
-      for (let fy = 0; fy < Math.ceil(selection.height); fy++) {
-        for (let fx = 0; fx < Math.ceil(selection.width); fx++) {
+      for (let fy = 0; fy < fillH; fy++) {
+        for (let fx = 0; fx < fillW; fx++) {
           const tx = fx / selection.width;
           const ty = fy / selection.height;
           
@@ -242,20 +262,24 @@ function StudioContent() {
           const g = bilinear(topLeft[1], topRight[1], bottomLeft[1], bottomRight[1], tx, ty);
           const b = bilinear(topLeft[2], topRight[2], bottomLeft[2], bottomRight[2], tx, ty);
           
-          const idx = (fy * Math.ceil(selection.width) + fx) * 4;
-          fillData.data[idx]     = Math.round((r + avgR) / 2);
-          fillData.data[idx + 1] = Math.round((g + avgG) / 2);
-          fillData.data[idx + 2] = Math.round((b + avgB) / 2);
+          const idx = (fy * fillW + fx) * 4;
+          // Mix 70% interpolated, 30% average for noise reduction
+          fillData.data[idx]     = Math.round(r * 0.7 + avgR * 0.3);
+          fillData.data[idx + 1] = Math.round(g * 0.7 + avgG * 0.3);
+          fillData.data[idx + 2] = Math.round(b * 0.7 + avgB * 0.3);
           fillData.data[idx + 3] = 255;
         }
       }
       
       ctx.putImageData(fillData, Math.round(selection.x), Math.round(selection.y));
       
+      // Edge blending
       ctx.save();
-      for (let i = 8; i > 0; i--) {
-        ctx.globalAlpha = 0.15;
+      ctx.globalCompositeOperation = 'source-over';
+      for (let i = 6; i > 0; i--) {
+        ctx.globalAlpha = 0.1;
         ctx.fillStyle = `rgb(${avgR},${avgG},${avgB})`;
+        ctx.filter = 'blur(2px)';
         ctx.fillRect(
           selection.x - i * 0.5,
           selection.y - i * 0.5,
@@ -263,7 +287,6 @@ function StudioContent() {
           selection.height + i
         );
       }
-      ctx.globalAlpha = 1;
       ctx.restore();
       
       setSelection(null);
@@ -279,7 +302,7 @@ function StudioContent() {
   // ── Commit text ───────────────────────────────────────────────────
   const commitText = () => {
     if (!textPos || !pendingText.trim()) { setShowTextModal(false); return; }
-    const ctx = canvasRef.current!.getContext('2d')!;
+    const ctx = canvasRef.current!.getContext('2d', { willReadFrequently: true })!;
     saveSnapshot();
     
     document.fonts.ready.then(() => {
@@ -375,7 +398,7 @@ function StudioContent() {
             <button
               className="btn btn-danger"
               onClick={handleEraseSelection}
-              disabled={!selection || isErasing}
+              disabled={!selection || isErasing || selection.width < 2}
               style={{ width: '100%', justifyContent: 'center' }}
             >
               {isErasing
@@ -487,7 +510,7 @@ function StudioContent() {
       </div>
 
       {/* ── Canvas Area ── */}
-      <div style={{ background: '#0d0d0d', borderRadius: 14, border: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
+      <div ref={containerRef} style={{ background: '#0d0d0d', borderRadius: 14, border: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
         {!isLoaded && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, color: '#666' }}>
             <Loader2 size={32} className="spin" />
@@ -495,32 +518,37 @@ function StudioContent() {
           </div>
         )}
 
-        <canvas
-          ref={canvasRef}
-          style={{
-            maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
-            cursor: tool === 'select' ? 'crosshair' : 'text',
-            display: isLoaded ? 'block' : 'none',
-            touchAction: 'none',
-          }}
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
-        />
+        <div style={{ position: 'relative', display: isLoaded ? 'block' : 'none', maxWidth: '100%', maxHeight: '100%' }}>
+          <canvas
+            ref={canvasRef}
+            style={{
+              display: 'block',
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
+              cursor: tool === 'select' ? 'crosshair' : 'text',
+              touchAction: 'none',
+            }}
+            onMouseDown={onMouseDown}
+            onMouseMove={onMouseMove}
+            onMouseUp={onMouseUp}
+            onMouseLeave={onMouseUp}
+          />
 
-        {selection && isLoaded && canvasRef.current && (
-          <div style={{
-            position: 'absolute',
-            left: `${(selection.x / canvasRef.current.width) * 100}%`,
-            top: `${(selection.y / canvasRef.current.height) * 100}%`,
-            width: `${(selection.width / canvasRef.current.width) * 100}%`,
-            height: `${(selection.height / canvasRef.current.height) * 100}%`,
-            border: '2px dashed #6366f1',
-            background: 'rgba(99, 102, 241, 0.08)',
-            pointerEvents: 'none',
-          }} />
-        )}
+          {selection && canvasRef.current && (
+            <div style={{
+              position: 'absolute',
+              left: `${(selection.x / canvasRef.current.width) * 100}%`,
+              top: `${(selection.y / canvasRef.current.height) * 100}%`,
+              width: `${(selection.width / canvasRef.current.width) * 100}%`,
+              height: `${(selection.height / canvasRef.current.height) * 100}%`,
+              border: '2px dashed #6366f1',
+              background: 'rgba(99, 102, 241, 0.12)',
+              pointerEvents: 'none',
+              zIndex: 5,
+            }} />
+          )}
+        </div>
 
         {/* Text input modal */}
         {showTextModal && (
