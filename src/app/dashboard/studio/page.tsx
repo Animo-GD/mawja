@@ -3,10 +3,55 @@
 import { useRef, useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useLang } from '@/lib/LanguageContext';
-import { Brush, Type, Undo2, Save, Loader2, Pipette, X, Check, Image as ImageIcon } from 'lucide-react';
+import { MousePointer2, Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
-type Tool = 'brush' | 'text' | 'eyedropper';
+type Tool = 'select' | 'text';
+
+const ARABIC_FONTS = [
+  { name: 'Cairo', label: 'Cairo | قاهرة' },
+  { name: 'Tajawal', label: 'Tajawal | تجوال' },
+  { name: 'Almarai', label: 'Almarai | المراعي' },
+  { name: 'Amiri', label: 'Amiri | أميري' },
+  { name: 'Lemonada', label: 'Lemonada | ليمونادة' },
+  { name: 'Reem Kufi', label: 'Reem Kufi | ريم كوفي' },
+];
+
+const ENGLISH_FONTS = [
+  { name: 'Inter', label: 'Inter' },
+  { name: 'Montserrat', label: 'Montserrat' },
+  { name: 'Playfair Display', label: 'Playfair Display' },
+  { name: 'Oswald', label: 'Oswald' },
+  { name: 'Raleway', label: 'Raleway' },
+  { name: 'Bebas Neue', label: 'Bebas Neue' },
+  { name: 'Roboto Slab', label: 'Roboto Slab' },
+];
+
+// Helper: sample average color of a 5x5 area at (x, y)
+function sampleCorner(ctx: CanvasRenderingContext2D, x: number, y: number): [number, number, number] {
+  const sx = Math.max(0, Math.round(x - 2));
+  const sy = Math.max(0, Math.round(y - 2));
+  try {
+    const data = ctx.getImageData(sx, sy, 5, 5);
+    let r = 0, g = 0, b = 0, count = 0;
+    for (let i = 0; i < data.data.length; i += 4) {
+      r += data.data[i]; g += data.data[i+1]; b += data.data[i+2]; count++;
+    }
+    return [Math.round(r/count), Math.round(g/count), Math.round(b/count)];
+  } catch (e) {
+    return [128, 128, 128]; // Fallback
+  }
+}
+
+// Helper: bilinear interpolation
+function bilinear(tl: number, tr: number, bl: number, br: number, tx: number, ty: number): number {
+  return Math.round(
+    tl * (1 - tx) * (1 - ty) +
+    tr * tx * (1 - ty) +
+    bl * (1 - tx) * ty +
+    br * tx * ty
+  );
+}
 
 function StudioContent() {
   const { t } = useLang();
@@ -19,22 +64,41 @@ function StudioContent() {
   const [isSaving, setIsSaving] = useState(false);
 
   // Tool state
-  const [tool, setTool] = useState<Tool>('brush');
-  const [brushSize, setBrushSize] = useState(24);
-  const [brushColor, setBrushColor] = useState('#ffffff');
-  const [isDrawing, setIsDrawing] = useState(false);
+  const [tool, setTool] = useState<Tool>('select');
+  
+  // Selection state
+  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [isErasing, setIsErasing] = useState(false);
 
   // Undo
   const [undoStack, setUndoStack] = useState<ImageData[]>([]);
 
-  // Text tool
+  // Text tool state
   const [showTextModal, setShowTextModal] = useState(false);
   const [pendingText, setPendingText] = useState('');
   const [textColor, setTextColor] = useState('#ffffff');
   const [fontSize, setFontSize] = useState(48);
   const [textPos, setTextPos] = useState<{ x: number; y: number } | null>(null);
+  const [fontFamily, setFontFamily] = useState('Inter');
+  const [fontScript, setFontScript] = useState<'arabic' | 'english'>('english');
 
   const isVideo = /\.(mp4|webm|ogg|mov)(\?|$)/i.test(mediaUrl);
+
+  // Load Google Fonts dynamically
+  useEffect(() => {
+    const allFonts = [...ARABIC_FONTS, ...ENGLISH_FONTS].map(f => f.name.replace(/ /g, '+'));
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = `https://fonts.googleapis.com/css2?family=${allFonts.join('&family=')}&display=swap`;
+    document.head.appendChild(link);
+    return () => {
+      if (document.head.contains(link)) {
+        document.head.removeChild(link);
+      }
+    };
+  }, []);
 
   // ── Load image onto canvas ────────────────────────────────────────
   useEffect(() => {
@@ -55,7 +119,6 @@ function StudioContent() {
       };
       img.onerror = () => {
         if (src === mediaUrl) {
-          // Retry via proxy
           loadImg(`/api/studio/proxy-image?url=${encodeURIComponent(mediaUrl)}`);
         } else {
           toast.error('Failed to load image');
@@ -95,50 +158,143 @@ function StudioContent() {
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isLoaded) return;
     const pos = getCanvasPos(e);
-    const ctx = canvasRef.current!.getContext('2d')!;
 
-    if (tool === 'eyedropper') {
-      const px = ctx.getImageData(Math.floor(pos.x), Math.floor(pos.y), 1, 1).data;
-      setBrushColor(`#${[px[0], px[1], px[2]].map(v => v.toString(16).padStart(2, '0')).join('')}`);
-      setTool('brush');
-      return;
-    }
-    if (tool === 'text') {
+    if (tool === 'select') {
+      setSelectionStart(pos);
+      setSelection(null);
+      setIsSelecting(true);
+    } else if (tool === 'text') {
       setTextPos(pos);
       setShowTextModal(true);
-      return;
-    }
-    if (tool === 'brush') {
-      saveSnapshot();
-      setIsDrawing(true);
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, brushSize / 2, 0, Math.PI * 2);
-      ctx.fillStyle = brushColor;
-      ctx.fill();
     }
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || tool !== 'brush') return;
-    const { x, y } = getCanvasPos(e);
-    const ctx = canvasRef.current!.getContext('2d')!;
-    ctx.beginPath();
-    ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
-    ctx.fillStyle = brushColor;
-    ctx.fill();
+    if (!isSelecting || !selectionStart || tool !== 'select') return;
+    const pos = getCanvasPos(e);
+    setSelection({
+      x: Math.min(selectionStart.x, pos.x),
+      y: Math.min(selectionStart.y, pos.y),
+      width: Math.abs(pos.x - selectionStart.x),
+      height: Math.abs(pos.y - selectionStart.y),
+    });
   };
 
-  const onMouseUp = () => setIsDrawing(false);
+  const onMouseUp = () => {
+    setIsSelecting(false);
+  };
+
+  // ── Erase logic ───────────────────────────────────────────────────
+  const handleEraseSelection = async () => {
+    if (!selection || !canvasRef.current) return;
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d')!;
+    
+    saveSnapshot();
+    setIsErasing(true);
+
+    try {
+      const borderSize = Math.max(20, Math.round(Math.min(selection.width, selection.height) * 0.15));
+      const sampleX = Math.max(0, selection.x - borderSize);
+      const sampleY = Math.max(0, selection.y - borderSize);
+      const sampleW = Math.min(canvas.width - sampleX, selection.width + borderSize * 2);
+      const sampleH = Math.min(canvas.height - sampleY, selection.height + borderSize * 2);
+      
+      const surroundingData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
+      const borderPixels: [number, number, number][] = [];
+      const relSelX = selection.x - sampleX;
+      const relSelY = selection.y - sampleY;
+      
+      for (let y = 0; y < sampleH; y++) {
+        for (let x = 0; x < sampleW; x++) {
+          const insideSel =
+            x >= relSelX && x < relSelX + selection.width &&
+            y >= relSelY && y < relSelY + selection.height;
+          if (!insideSel) {
+            const idx = (y * sampleW + x) * 4;
+            borderPixels.push([
+              surroundingData.data[idx],
+              surroundingData.data[idx + 1],
+              surroundingData.data[idx + 2],
+            ]);
+          }
+        }
+      }
+      
+      const avgR = Math.round(borderPixels.reduce((s, p) => s + p[0], 0) / borderPixels.length);
+      const avgG = Math.round(borderPixels.reduce((s, p) => s + p[1], 0) / borderPixels.length);
+      const avgB = Math.round(borderPixels.reduce((s, p) => s + p[2], 0) / borderPixels.length);
+      
+      const topLeft = sampleCorner(ctx, selection.x - 5, selection.y - 5);
+      const topRight = sampleCorner(ctx, selection.x + selection.width + 5, selection.y - 5);
+      const bottomLeft = sampleCorner(ctx, selection.x - 5, selection.y + selection.height + 5);
+      const bottomRight = sampleCorner(ctx, selection.x + selection.width + 5, selection.y + selection.height + 5);
+      
+      const fillData = ctx.createImageData(Math.ceil(selection.width), Math.ceil(selection.height));
+      
+      for (let fy = 0; fy < Math.ceil(selection.height); fy++) {
+        for (let fx = 0; fx < Math.ceil(selection.width); fx++) {
+          const tx = fx / selection.width;
+          const ty = fy / selection.height;
+          
+          const r = bilinear(topLeft[0], topRight[0], bottomLeft[0], bottomRight[0], tx, ty);
+          const g = bilinear(topLeft[1], topRight[1], bottomLeft[1], bottomRight[1], tx, ty);
+          const b = bilinear(topLeft[2], topRight[2], bottomLeft[2], bottomRight[2], tx, ty);
+          
+          const idx = (fy * Math.ceil(selection.width) + fx) * 4;
+          fillData.data[idx]     = Math.round((r + avgR) / 2);
+          fillData.data[idx + 1] = Math.round((g + avgG) / 2);
+          fillData.data[idx + 2] = Math.round((b + avgB) / 2);
+          fillData.data[idx + 3] = 255;
+        }
+      }
+      
+      ctx.putImageData(fillData, Math.round(selection.x), Math.round(selection.y));
+      
+      ctx.save();
+      for (let i = 8; i > 0; i--) {
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = `rgb(${avgR},${avgG},${avgB})`;
+        ctx.fillRect(
+          selection.x - i * 0.5,
+          selection.y - i * 0.5,
+          selection.width + i,
+          selection.height + i
+        );
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      
+      setSelection(null);
+      toast.success('Area erased!');
+    } catch (err) {
+      toast.error('Erase failed');
+      console.error(err);
+    } finally {
+      setIsErasing(false);
+    }
+  };
 
   // ── Commit text ───────────────────────────────────────────────────
   const commitText = () => {
     if (!textPos || !pendingText.trim()) { setShowTextModal(false); return; }
     const ctx = canvasRef.current!.getContext('2d')!;
     saveSnapshot();
-    ctx.font = `bold ${fontSize}px sans-serif`;
-    ctx.fillStyle = textColor;
-    ctx.textBaseline = 'middle';
-    ctx.fillText(pendingText, textPos.x, textPos.y);
+    
+    document.fonts.ready.then(() => {
+      ctx.font = `bold ${fontSize}px "${fontFamily}", sans-serif`;
+      ctx.fillStyle = textColor;
+      ctx.textBaseline = 'middle';
+      
+      if (fontScript === 'arabic') {
+        const metrics = ctx.measureText(pendingText);
+        ctx.fillText(pendingText, textPos!.x - metrics.width, textPos!.y);
+      } else {
+        ctx.fillText(pendingText, textPos!.x, textPos!.y);
+      }
+    });
+    
     setPendingText('');
     setShowTextModal(false);
     setTextPos(null);
@@ -166,7 +322,6 @@ function StudioContent() {
     }, 'image/png');
   };
 
-  // ── No media / video guard ────────────────────────────────────────
   if (!mediaUrl || isVideo) {
     return (
       <div className="empty-state" style={{ marginTop: 60 }}>
@@ -180,8 +335,6 @@ function StudioContent() {
     );
   }
 
-  const PRESETS = ['#ffffff', '#000000', '#f0ede6', '#1a1a2e', '#e8d5b7', '#c4a882'];
-
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '270px 1fr', gap: 20, height: 'calc(100vh - 148px)' }}>
 
@@ -192,16 +345,15 @@ function StudioContent() {
         {/* Tool selector */}
         <div className="form-group">
           <label className="form-label">Active Tool</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             {([
-              { id: 'brush' as Tool,      icon: <Brush size={16} />,   label: 'Brush'   },
-              { id: 'text'  as Tool,      icon: <Type size={16} />,    label: 'Text'    },
-              { id: 'eyedropper' as Tool, icon: <Pipette size={16} />, label: 'Pick'    },
+              { id: 'select' as Tool, icon: <MousePointer2 size={16} />, label: 'Select & Erase' },
+              { id: 'text'   as Tool, icon: <Type size={16} />,          label: 'Text'           },
             ]).map(({ id, icon, label }) => (
               <button key={id}
                 className={`btn ${tool === id ? 'btn-primary' : 'btn-secondary'}`}
                 style={{ flexDirection: 'column', gap: 4, padding: '10px 6px', fontSize: '0.72rem', justifyContent: 'center' }}
-                onClick={() => setTool(id)}
+                onClick={() => { setTool(id); setSelection(null); }}
               >
                 {icon}{label}
               </button>
@@ -209,28 +361,36 @@ function StudioContent() {
           </div>
         </div>
 
-        {/* Brush options */}
-        {tool === 'brush' && (
+        {/* Selection options */}
+        {tool === 'select' && (
           <>
-            <div className="form-group">
-              <label className="form-label">Color</label>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                <input type="color" value={brushColor} onChange={e => setBrushColor(e.target.value)}
-                  style={{ width: 44, height: 38, border: 'none', borderRadius: 8, cursor: 'pointer', padding: 2 }} />
-                <code style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>{brushColor}</code>
+            <p style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', lineHeight: 1.6, margin: 0 }}>
+              Drag on the image to select an area, then click <strong>Erase Selection</strong> to remove it and fill with the surrounding background.
+            </p>
+            {selection && (
+              <div style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 8, padding: '8px 12px', fontSize: '0.8rem', color: '#6366f1' }}>
+                Selection: {Math.round(selection.width)} × {Math.round(selection.height)}px
               </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
-                {PRESETS.map(c => (
-                  <button key={c} onClick={() => setBrushColor(c)}
-                    title={c}
-                    style={{ width: 26, height: 26, borderRadius: 6, border: brushColor === c ? '2px solid var(--color-accent)' : '1px solid var(--color-border)', background: c, cursor: 'pointer' }} />
-                ))}
-              </div>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Size — {brushSize}px</label>
-              <input type="range" min={2} max={120} value={brushSize} onChange={e => setBrushSize(+e.target.value)} style={{ width: '100%' }} />
-            </div>
+            )}
+            <button
+              className="btn btn-danger"
+              onClick={handleEraseSelection}
+              disabled={!selection || isErasing}
+              style={{ width: '100%', justifyContent: 'center' }}
+            >
+              {isErasing
+                ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 6 }} />Erasing…</>
+                : <><Eraser size={14} style={{ marginInlineEnd: 6 }} />Erase Selection</>}
+            </button>
+            {selection && (
+              <button
+                className="btn btn-secondary"
+                onClick={() => setSelection(null)}
+                style={{ width: '100%', justifyContent: 'center' }}
+              >
+                Clear Selection
+              </button>
+            )}
           </>
         )}
 
@@ -238,25 +398,77 @@ function StudioContent() {
         {tool === 'text' && (
           <>
             <div className="form-group">
-              <label className="form-label">Text Color</label>
-              <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
-                style={{ width: 44, height: 38, border: 'none', borderRadius: 8, cursor: 'pointer', padding: 2 }} />
+              <label className="form-label">Script</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <button
+                  className={`btn btn-sm ${fontScript === 'english' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => { setFontScript('english'); setFontFamily('Inter'); }}
+                >
+                  English
+                </button>
+                <button
+                  className={`btn btn-sm ${fontScript === 'arabic' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => { setFontScript('arabic'); setFontFamily('Cairo'); }}
+                >
+                  عربي
+                </button>
+              </div>
             </div>
+
             <div className="form-group">
-              <label className="form-label">Font Size — {fontSize}px</label>
+              <label className="form-label">Font</label>
+              <select
+                className="form-select"
+                value={fontFamily}
+                onChange={e => setFontFamily(e.target.value)}
+                style={{ fontFamily }}
+              >
+                {(fontScript === 'arabic' ? ARABIC_FONTS : ENGLISH_FONTS).map(f => (
+                  <option key={f.name} value={f.name} style={{ fontFamily: f.name }}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+              <div style={{
+                marginTop: 8,
+                padding: '8px 10px',
+                background: 'var(--color-bg-warm)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 8,
+                fontFamily,
+                fontSize: '1rem',
+                direction: fontScript === 'arabic' ? 'rtl' : 'ltr',
+                color: 'var(--color-text-primary)',
+                textAlign: fontScript === 'arabic' ? 'right' : 'left',
+              }}>
+                {fontScript === 'arabic' ? 'مرحبًا بالعالم' : 'Hello, World!'}
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Text Color</label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
+                  style={{ width: 44, height: 38, border: 'none', borderRadius: 8, cursor: 'pointer', padding: 2 }} />
+                <code style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>{textColor}</code>
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                {['#ffffff', '#000000', '#f0ede6', '#1a1a2e', '#e8d5b7', '#c4a882', '#6366f1', '#ef4444'].map(c => (
+                  <button key={c} onClick={() => setTextColor(c)}
+                    style={{ width: 26, height: 26, borderRadius: 6, border: textColor === c ? '2px solid var(--color-accent)' : '1px solid var(--color-border)', background: c, cursor: 'pointer' }} />
+                ))}
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Size — {fontSize}px</label>
               <input type="range" min={12} max={200} value={fontSize} onChange={e => setFontSize(+e.target.value)} style={{ width: '100%' }} />
             </div>
+
             <p style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', lineHeight: 1.55, margin: 0 }}>
-              Click anywhere on the image to place text at that position.
+              Click on the image to place text.
             </p>
           </>
-        )}
-
-        {/* Eyedropper hint */}
-        {tool === 'eyedropper' && (
-          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', lineHeight: 1.55, margin: 0 }}>
-            Click on the image to sample a pixel color and set it as the brush color.
-          </p>
         )}
 
         {/* Actions */}
@@ -287,7 +499,7 @@ function StudioContent() {
           ref={canvasRef}
           style={{
             maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
-            cursor: tool === 'brush' ? 'crosshair' : tool === 'eyedropper' ? 'copy' : 'text',
+            cursor: tool === 'select' ? 'crosshair' : 'text',
             display: isLoaded ? 'block' : 'none',
             touchAction: 'none',
           }}
@@ -297,6 +509,19 @@ function StudioContent() {
           onMouseLeave={onMouseUp}
         />
 
+        {selection && isLoaded && canvasRef.current && (
+          <div style={{
+            position: 'absolute',
+            left: `${(selection.x / canvasRef.current.width) * 100}%`,
+            top: `${(selection.y / canvasRef.current.height) * 100}%`,
+            width: `${(selection.width / canvasRef.current.width) * 100}%`,
+            height: `${(selection.height / canvasRef.current.height) * 100}%`,
+            border: '2px dashed #6366f1',
+            background: 'rgba(99, 102, 241, 0.08)',
+            pointerEvents: 'none',
+          }} />
+        )}
+
         {/* Text input modal */}
         {showTextModal && (
           <div style={{
@@ -305,14 +530,48 @@ function StudioContent() {
           }}>
             <div className="card-flat" style={{ border: '1px solid var(--color-border)', borderRadius: 14, padding: 24, display: 'flex', flexDirection: 'column', gap: 14, minWidth: 300, maxWidth: 400 }}>
               <p style={{ margin: 0, fontWeight: 600 }}>Add Text to Image</p>
+              
+              <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>Font: <strong>{fontFamily}</strong></span>
+                <span>·</span>
+                <span>{fontSize}px</span>
+                <span>·</span>
+                <span style={{ color: textColor, background: '#000', padding: '1px 6px', borderRadius: 4 }}>■</span>
+              </div>
+              
               <input
                 autoFocus
                 className="form-input"
-                placeholder="Type your text…"
+                placeholder={fontScript === 'arabic' ? 'اكتب النص هنا…' : 'Type your text…'}
                 value={pendingText}
                 onChange={e => setPendingText(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') commitText(); if (e.key === 'Escape') setShowTextModal(false); }}
+                style={{
+                  fontFamily,
+                  direction: fontScript === 'arabic' ? 'rtl' : 'ltr',
+                  textAlign: fontScript === 'arabic' ? 'right' : 'left',
+                  fontSize: '1.1rem',
+                }}
               />
+              
+              {pendingText && (
+                <div style={{
+                  padding: '10px 14px',
+                  background: '#111',
+                  borderRadius: 8,
+                  fontFamily,
+                  fontSize: Math.min(fontSize, 32),
+                  color: textColor,
+                  direction: fontScript === 'arabic' ? 'rtl' : 'ltr',
+                  textAlign: fontScript === 'arabic' ? 'right' : 'left',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                }}>
+                  {pendingText}
+                </div>
+              )}
+              
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={commitText}>
                   <Check size={15} style={{ marginInlineEnd: 6 }} /> Place
