@@ -533,14 +533,23 @@ function StudioContent() {
           </div>
         )}
 
-        <div style={{ position: 'relative', display: isLoaded ? 'block' : 'none', maxWidth: '100%', maxHeight: '100%' }}>
+        <div style={{ 
+          position: 'relative', 
+          display: isLoaded ? 'inline-block' : 'none', 
+          maxWidth: '100%', 
+          maxHeight: '100%',
+          boxShadow: '0 0 20px rgba(0,0,0,0.3)',
+          borderRadius: 8,
+          overflow: 'hidden'
+        }}>
           <canvas
             ref={canvasRef}
             style={{
               display: 'block',
+              width: 'auto',
+              height: 'auto',
               maxWidth: '100%',
               maxHeight: '100%',
-              objectFit: 'contain',
               cursor: tool === 'select' ? 'crosshair' : 'text',
               touchAction: 'none',
             }}
