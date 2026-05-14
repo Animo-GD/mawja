@@ -509,10 +509,7 @@ function StudioContent() {
         fd.append('file', blob, 'studio-edit.png');
         const res = await fetch('/api/studio/save-image', { method: 'POST', body: fd });
         if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
-        
-        // Clear cache on success
         localStorage.removeItem(`studio_cache_${mediaUrl}`);
-        
         toast.success('Saved to gallery!');
         router.push('/dashboard/gallery');
       } catch (err: any) {
@@ -537,231 +534,69 @@ function StudioContent() {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '270px 1fr', gap: 20, height: 'calc(100vh - 148px)' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 0, height: 'calc(100vh - 80px)', background: '#f5f5f5', borderRadius: 12, overflow: 'hidden', border: '1px solid #e8e8e8' }}>
 
-      {/* ── Left Panel ── */}
-      <div className="card-flat" style={{ border: '1px solid var(--color-border)', borderRadius: 14, padding: 20, display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto' }}>
-        <h2 className="text-subhead" style={{ marginBottom: 0 }}>Image Studio</h2>
-
-        {/* Tool selector */}
-        <div className="form-group">
-          <label className="form-label">Active Tool</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            {([
-              { id: 'select' as Tool, icon: <MousePointer2 size={16} />, label: 'Select & Erase' },
-              { id: 'text'   as Tool, icon: <Type size={16} />,          label: 'Text'           },
-            ]).map(({ id, icon, label }) => (
-              <button key={id}
-                className={`btn ${tool === id ? 'btn-primary' : 'btn-secondary'}`}
-                style={{ flexDirection: 'column', gap: 4, padding: '10px 6px', fontSize: '0.72rem', justifyContent: 'center' }}
-                onClick={() => { setTool(id); setSelection(null); }}
-              >
-                {icon}{label}
-              </button>
-            ))}
-          </div>
+      {/* ── Left Tool Panel ── */}
+      <div style={{ background: '#fff', borderRight: '1px solid #ececec', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+        {/* Tools */}
+        <div style={{ padding: '12px 8px', borderBottom: '1px solid #f0f0f0' }}>
+          {([
+            { id: 'select' as Tool, icon: <Eraser size={16} />, label: 'Retouch' },
+            { id: 'text'   as Tool, icon: <Type size={16} />,   label: 'Text' },
+          ]).map(({ id, icon, label }) => (
+            <button
+              key={id}
+              onClick={() => { setTool(id); setSelection(null); }}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '11px 14px', borderRadius: 8, marginBottom: 2,
+                background: tool === id ? '#f0f0f0' : 'transparent',
+                border: 'none', cursor: 'pointer', fontSize: '0.9rem', fontWeight: tool === id ? 600 : 400,
+                color: '#222',
+              }}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>{icon} {label}</span>
+              {tool === id && <X size={13} style={{ color: '#999' }} onClick={e => { e.stopPropagation(); setTool('select'); setSelection(null); }} />}
+            </button>
+          ))}
         </div>
 
-        {/* Selection options */}
-        {tool === 'select' && (
-          <>
-            <p style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', lineHeight: 1.6, margin: 0 }}>
-              Drag on the image to select an area, then click <strong>Erase Selection</strong> to remove it and fill with the surrounding background.
-            </p>
-            {selection && (
-              <div style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 8, padding: '8px 12px', fontSize: '0.8rem', color: '#6366f1' }}>
-                Selection: {Math.round(selection.width)} × {Math.round(selection.height)}px
-              </div>
-            )}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <button
-                className="btn btn-danger"
-                onClick={handleEraseSelection}
-                disabled={!selection || isErasing || selection.width < 2}
-                style={{ width: '100%', justifyContent: 'center', fontWeight: 600 }}
-              >
-                {isErasing
-                  ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 6 }} />Processing…</>
-                  : <><Eraser size={14} style={{ marginInlineEnd: 6 }} />✨ AI Erase</>}
-              </button>
-              <button
-                className="btn btn-secondary"
-                onClick={handleLocalErase}
-                disabled={!selection || isErasing || selection.width < 2}
-                style={{ width: '100%', justifyContent: 'center' }}
-                title="Fast, lower-quality erase that runs locally in your browser"
-              >
-                <Eraser size={14} style={{ marginInlineEnd: 6 }} /> Fast Erase (Local)
-              </button>
-            </div>
-            {selection && (
-              <button
-                className="btn btn-secondary"
-                onClick={() => setSelection(null)}
-                style={{ width: '100%', justifyContent: 'center' }}
-              >
-                Clear Selection
-              </button>
-            )}
-          </>
-        )}
-
-        {/* Text options */}
-        {tool === 'text' && (
-          <>
-            <div className="form-group">
-              <label className="form-label">Script</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                <button
-                  className={`btn btn-sm ${fontScript === 'english' ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => { setFontScript('english'); setFontFamily('Inter'); }}
-                >
-                  English
-                </button>
-                <button
-                  className={`btn btn-sm ${fontScript === 'arabic' ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => { setFontScript('arabic'); setFontFamily('Cairo'); }}
-                >
-                  عربي
-                </button>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Font</label>
-              <select
-                className="form-select"
-                value={fontFamily}
-                onChange={e => setFontFamily(e.target.value)}
-                style={{ fontFamily }}
-              >
-                {(fontScript === 'arabic' ? ARABIC_FONTS : ENGLISH_FONTS).map(f => (
-                  <option key={f.name} value={f.name} style={{ fontFamily: f.name }}>
-                    {f.label}
-                  </option>
-                ))}
-              </select>
-              <div style={{
-                marginTop: 8,
-                padding: '8px 10px',
-                background: 'var(--color-bg-warm)',
-                border: '1px solid var(--color-border)',
-                borderRadius: 8,
-                fontFamily,
-                fontSize: '1rem',
-                direction: fontScript === 'arabic' ? 'rtl' : 'ltr',
-                color: 'var(--color-text-primary)',
-                textAlign: fontScript === 'arabic' ? 'right' : 'left',
-              }}>
-                {fontScript === 'arabic' ? 'مرحبًا بالعالم' : 'Hello, World!'}
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Text Color</label>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
-                  style={{ width: 44, height: 38, border: 'none', borderRadius: 8, cursor: 'pointer', padding: 2 }} />
-                <code style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>{textColor}</code>
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                {['#ffffff', '#000000', '#f0ede6', '#1a1a2e', '#e8d5b7', '#c4a882', '#6366f1', '#ef4444'].map(c => (
-                  <button key={c} onClick={() => setTextColor(c)}
-                    style={{ width: 26, height: 26, borderRadius: 6, border: textColor === c ? '2px solid var(--color-accent)' : '1px solid var(--color-border)', background: c, cursor: 'pointer' }} />
-                ))}
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Size — {fontSize}px</label>
-              <input type="range" min={12} max={200} value={fontSize} onChange={e => setFontSize(+e.target.value)} style={{ width: '100%' }} />
-            </div>
-
-            <p style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', lineHeight: 1.55, margin: 0 }}>
-              Click on the image to place text.
-            </p>
-          </>
-        )}
-
-        {/* Actions */}
-        <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <button className="btn btn-secondary" onClick={resetToOriginal} disabled={!isLoaded}
-            style={{ width: '100%', justifyContent: 'center' }}>
-            <RotateCcw size={15} style={{ marginInlineEnd: 8 }} /> Reset to Original
+        {/* Undo / Reset */}
+        <div style={{ padding: '8px', borderBottom: '1px solid #f0f0f0' }}>
+          <button onClick={undo} disabled={undoStack.length <= 1} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.87rem', color: '#444', opacity: undoStack.length <= 1 ? 0.4 : 1 }}>
+            <Undo2 size={15} /> Undo
           </button>
-          <button className="btn btn-secondary" onClick={undo} disabled={undoStack.length <= 1}
-            style={{ width: '100%', justifyContent: 'center' }}>
-            <Undo2 size={15} style={{ marginInlineEnd: 8 }} /> Undo
-          </button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={isSaving || !isLoaded}
-            style={{ width: '100%', justifyContent: 'center' }}>
-            {isSaving
-              ? <><Loader2 size={15} className="spin" style={{ marginInlineEnd: 8 }} />Saving…</>
-              : <><Save size={15} style={{ marginInlineEnd: 8 }} />Save to Gallery</>}
+          <button onClick={resetToOriginal} disabled={!isLoaded} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.87rem', color: '#444' }}>
+            <RotateCcw size={15} /> Reset
           </button>
         </div>
 
-        {/* Selected Text Controls */}
-        {selectedTextId && tool === 'text' && (
-          <div className="card-flat" style={{ border: '1px solid var(--color-border)', borderRadius: 14, padding: 15, display: 'flex', flexDirection: 'column', gap: 12, marginTop: 15, background: 'rgba(99,102,241,0.03)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ fontSize: '0.85rem', fontWeight: 600, margin: 0 }}>Edit Text</h3>
-              <button onClick={deleteSelectedText} style={{ border: 'none', background: 'none', color: '#ef4444', cursor: 'pointer', padding: 4 }}>
-                <Trash2 size={14} />
-              </button>
-            </div>
-            
-            <input 
-              className="input-flat" 
-              value={texts.find(t => t.id === selectedTextId)?.text || ''} 
-              onChange={e => updateSelectedText({ text: e.target.value })}
-              style={{ width: '100%', fontSize: '0.8rem', padding: '6px 10px' }}
-              placeholder="Text content..."
-            />
+        <div style={{ flex: 1 }} />
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <input type="color" value={texts.find(t => t.id === selectedTextId)?.color || '#ffffff'} onChange={e => updateSelectedText({ color: e.target.value })}
-                style={{ width: 30, height: 30, border: 'none', padding: 0, background: 'none', cursor: 'pointer' }} />
-              <input type="range" min={12} max={200} value={texts.find(t => t.id === selectedTextId)?.fontSize || 48} onChange={e => updateSelectedText({ fontSize: +e.target.value })} style={{ flex: 1 }} />
-            </div>
-          </div>
-        )}
+        {/* Save */}
+        <div style={{ padding: 12, borderTop: '1px solid #f0f0f0' }}>
+          <button className="btn btn-primary" onClick={handleSave} disabled={isSaving || !isLoaded} style={{ width: '100%', justifyContent: 'center', borderRadius: 8, fontWeight: 600 }}>
+            {isSaving ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 7 }} />Saving…</> : <><Save size={14} style={{ marginInlineEnd: 7 }} />Download</>}
+          </button>
+        </div>
       </div>
 
-      {/* ── Canvas Area ── */}
-      <div ref={containerRef} style={{ background: '#0d0d0d', borderRadius: 14, border: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
+      {/* ── Canvas ── */}
+      <div ref={containerRef} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative', background: '#f5f5f5' }}>
         {!isLoaded && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, color: '#666' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, color: '#aaa' }}>
             <Loader2 size={32} className="spin" />
             <p style={{ fontSize: '0.88rem' }}>Loading image…</p>
           </div>
         )}
 
-        <div 
-          style={{ 
-            position: 'relative', 
-            display: isLoaded ? 'inline-block' : 'none', 
-            maxWidth: '100%', 
-            maxHeight: '100%',
-            boxShadow: '0 0 20px rgba(0,0,0,0.3)',
-            borderRadius: 8,
-            overflow: 'hidden'
-          }}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
+        <div
+          style={{ position: 'relative', display: isLoaded ? 'inline-block' : 'none', maxWidth: '100%', maxHeight: '100%', boxShadow: '0 8px 48px rgba(0,0,0,0.14)', overflow: 'hidden' }}
+          onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
         >
           <canvas
             ref={canvasRef}
-            style={{
-              display: 'block',
-              width: 'auto',
-              height: 'auto',
-              maxWidth: '100%',
-              maxHeight: '100%',
-              cursor: tool === 'select' ? 'crosshair' : 'text',
-              touchAction: 'none',
-            }}
+            style={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: 'calc(100vh - 100px)', cursor: tool === 'select' ? 'crosshair' : 'text', touchAction: 'none' }}
             onMouseDown={onMouseDown}
           />
 
@@ -769,46 +604,32 @@ function StudioContent() {
           {texts.map(t => {
             const isSelected = t.id === selectedTextId;
             return (
-              <div
-                key={t.id}
+              <div key={t.id}
                 onMouseDown={(e) => {
                   e.stopPropagation();
-                  setSelectedTextId(t.id);
-                  setTool('text');
-                  setDraggingId(t.id);
+                  setSelectedTextId(t.id); setTool('text'); setDraggingId(t.id);
                   const rect = canvasRef.current!.getBoundingClientRect();
                   const scaleX = canvasRef.current!.width / rect.width;
                   const scaleY = canvasRef.current!.height / rect.height;
-                  setDragStart({
-                    x: (e.clientX - rect.left) * scaleX - t.x,
-                    y: (e.clientY - rect.top) * scaleY - t.y
-                  });
+                  setDragStart({ x: (e.clientX - rect.left) * scaleX - t.x, y: (e.clientY - rect.top) * scaleY - t.y });
                 }}
                 style={{
                   position: 'absolute',
                   left: `${(t.x / canvasRef.current!.width) * 100}%`,
                   top: `${(t.y / canvasRef.current!.height) * 100}%`,
                   transform: t.fontScript === 'arabic' ? 'translateX(-100%) translateY(-50%)' : 'translateY(-50%)',
-                  color: t.color,
-                  fontSize: `${(t.fontSize / canvasRef.current!.width) * (containerRef.current?.offsetWidth || 0)}px`, // Responsive size
-                  fontFamily: `"${t.fontFamily}", sans-serif`,
-                  fontWeight: 'bold',
-                  cursor: draggingId === t.id ? 'grabbing' : 'grab',
-                  userSelect: 'none',
-                  whiteSpace: 'nowrap',
-                  padding: '4px 8px',
-                  border: isSelected ? '2px solid #6366f1' : '2px solid transparent',
-                  borderRadius: 4,
-                  background: isSelected ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
-                  zIndex: isSelected ? 10 : 5,
-                  pointerEvents: isErasing ? 'none' : 'auto'
+                  color: t.color, fontSize: `${(t.fontSize / canvasRef.current!.width) * (containerRef.current?.offsetWidth || 0)}px`,
+                  fontFamily: `"${t.fontFamily}", sans-serif`, fontWeight: 'bold',
+                  cursor: draggingId === t.id ? 'grabbing' : 'grab', userSelect: 'none', whiteSpace: 'nowrap',
+                  padding: '3px 6px', border: isSelected ? '1.5px dashed rgba(99,102,241,0.8)' : '1.5px solid transparent',
+                  borderRadius: 3, background: isSelected ? 'rgba(99,102,241,0.07)' : 'transparent',
+                  zIndex: isSelected ? 10 : 5, pointerEvents: isErasing ? 'none' : 'auto'
                 }}
-              >
-                {t.text}
-              </div>
+              >{t.text}</div>
             );
           })}
 
+          {/* Selection Overlay */}
           {selection && canvasRef.current && (
             <div style={{
               position: 'absolute',
@@ -816,45 +637,21 @@ function StudioContent() {
               top: `${(selection.y / canvasRef.current.height) * 100}%`,
               width: `${(selection.width / canvasRef.current.width) * 100}%`,
               height: `${(selection.height / canvasRef.current.height) * 100}%`,
-              border: '2px dashed #6366f1',
-              background: 'rgba(99, 102, 241, 0.12)',
-              pointerEvents: 'none',
-              zIndex: 5,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
+              border: '1.5px dashed #6366f1', background: 'rgba(99,102,241,0.09)',
+              pointerEvents: 'none', zIndex: 5, display: 'flex', alignItems: 'center', justifyContent: 'center'
             }}>
               {isErasing && (
-                <div style={{ background: 'rgba(0,0,0,0.6)', padding: 12, borderRadius: 50, display: 'flex', alignItems: 'center', gap: 8, color: '#fff' }}>
-                  <Loader2 size={16} className="spin" />
-                  <span style={{ fontSize: 12, fontWeight: 500 }}>AI is working...</span>
+                <div style={{ background: 'rgba(0,0,0,0.6)', padding: '7px 14px', borderRadius: 20, display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontSize: 12 }}>
+                  <Loader2 size={13} className="spin" /> AI is working...
                 </div>
               )}
             </div>
           )}
-          
-          {/* Block canvas interactions when processing */}
-          {isErasing && (
-            <div style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'not-allowed' }} />
-          )}
+          {isErasing && <div style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'not-allowed' }} />}
         </div>
 
         {/* Text input modal */}
         {showTextModal && (
-          <div style={{
-            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', zIndex: 10,
-          }}>
-            <div className="card-flat" style={{ border: '1px solid var(--color-border)', borderRadius: 14, padding: 24, display: 'flex', flexDirection: 'column', gap: 14, minWidth: 300, maxWidth: 400 }}>
-              <p style={{ margin: 0, fontWeight: 600 }}>Add Text to Image</p>
-              
-              <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>Font: <strong>{fontFamily}</strong></span>
-                <span>·</span>
-                <span>{fontSize}px</span>
-                <span>·</span>
-                <span style={{ color: textColor, background: '#000', padding: '1px 6px', borderRadius: 4 }}>■</span>
-              </div>
               
               <input
                 autoFocus
