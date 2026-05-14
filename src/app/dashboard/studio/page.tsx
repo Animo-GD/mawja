@@ -111,6 +111,7 @@ function StudioContent() {
   const [brushSize, setBrushSize] = useState(40);
   const [isDrawingMask, setIsDrawingMask] = useState(false);
   const [hasMask, setHasMask] = useState(false);
+  const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
 
   const isVideo = /\.(mp4|webm|ogg|mov)(\?|$)/i.test(mediaUrl);
 
@@ -262,7 +263,7 @@ function StudioContent() {
 
     if (tool === 'brush') {
       setIsDrawingMask(true);
-      paintMask(e);
+      paintMask(e.clientX, e.clientY);
     } else if (tool === 'select') {
       setSelectedTextId(null);
       setSelectionStart(pos);
@@ -275,20 +276,23 @@ function StudioContent() {
     }
   };
 
-  const paintMask = (e: React.MouseEvent<HTMLElement>) => {
+  // Paint on the mask canvas using raw client coordinates
+  const paintMask = (clientX: number, clientY: number) => {
     const maskCanvas = maskCanvasRef.current;
     const canvas = canvasRef.current;
     if (!maskCanvas || !canvas) return;
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+    // brushSize is in display pixels — convert to canvas pixels
+    const radiusCanvas = (brushSize / 2) * scaleX;
     const ctx = maskCanvas.getContext('2d')!;
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = 'rgba(239, 68, 68, 0.55)';
     ctx.beginPath();
-    ctx.arc(x, y, (brushSize / 2) * scaleX, 0, Math.PI * 2);
+    ctx.arc(x, y, radiusCanvas, 0, Math.PI * 2);
     ctx.fill();
     setHasMask(true);
   };
@@ -321,12 +325,18 @@ function StudioContent() {
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLElement>) => {
-    if (tool === 'brush' && isDrawingMask) {
-      paintMask(e);
+    // Always update brush cursor position
+    if (tool === 'brush') {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        setCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      }
+      if (isDrawingMask) paintMask(e.clientX, e.clientY);
       return;
     }
-    const pos = getCanvasPos(e);
 
+    const pos = getCanvasPos(e);
     if (draggingId) {
       setTexts(prev => prev.map(t =>
         t.id === draggingId
@@ -335,7 +345,6 @@ function StudioContent() {
       ));
       return;
     }
-
     if (!isSelecting || !selectionStart || tool !== 'select') return;
     setSelection({
       x: Math.max(0, Math.min(canvasRef.current!.width, Math.min(selectionStart.x, pos.x))),
@@ -350,6 +359,11 @@ function StudioContent() {
     setIsDrawingMask(false);
     setDraggingId(null);
     setDragStart(null);
+  };
+
+  const onMouseLeave = () => {
+    onMouseUp();
+    setCursorPos(null);
   };
 
   // ── Erase logic (Fast Local Fallback) ───────────────────────────
@@ -627,6 +641,35 @@ function StudioContent() {
           ))}
         </div>
 
+        {/* Selection action buttons */}
+        {tool === 'select' && selection && selection.width > 2 && (
+          <div style={{ padding: '10px 8px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: '0.75rem', color: '#999', paddingLeft: 6 }}>
+              {Math.round(selection.width)} × {Math.round(selection.height)}px selected
+            </div>
+            <button
+              onClick={handleEraseSelection}
+              disabled={isErasing}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '10px 14px', borderRadius: 8, border: 'none', background: isErasing ? '#ccc' : '#ef4444', color: '#fff', cursor: isErasing ? 'not-allowed' : 'pointer', fontSize: '0.87rem', fontWeight: 600 }}
+            >
+              {isErasing ? <><Loader2 size={14} className="spin" /> Working…</> : <><Eraser size={14} /> AI Erase</>}
+            </button>
+            <button
+              onClick={handleLocalErase}
+              disabled={isErasing}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '9px 14px', borderRadius: 8, border: '1px solid #e5e5e5', background: 'transparent', cursor: isErasing ? 'not-allowed' : 'pointer', fontSize: '0.85rem', color: '#555' }}
+            >
+              <Eraser size={13} /> Fast Erase (Local)
+            </button>
+            <button
+              onClick={() => setSelection(null)}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '7px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.82rem', color: '#999' }}
+            >
+              <X size={12} /> Clear selection
+            </button>
+          </div>
+        )}
+
         {/* Undo / Reset */}
         <div style={{ padding: '8px', borderBottom: '1px solid #f0f0f0' }}>
           <button onClick={undo} disabled={undoStack.length <= 1} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.87rem', color: '#444', opacity: undoStack.length <= 1 ? 0.4 : 1 }}>
@@ -658,7 +701,7 @@ function StudioContent() {
 
         <div
           style={{ position: 'relative', display: isLoaded ? 'inline-block' : 'none', maxWidth: '100%', maxHeight: '100%', boxShadow: '0 8px 48px rgba(0,0,0,0.14)', overflow: 'hidden' }}
-          onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+          onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseLeave}
         >
           <canvas
             ref={canvasRef}
@@ -670,9 +713,21 @@ function StudioContent() {
             ref={maskCanvasRef}
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 3 }}
           />
-          {/* Custom brush cursor */}
-          {tool === 'brush' && isLoaded && (
-            <div id="brush-cursor" style={{ position: 'absolute', inset: 0, zIndex: 4, cursor: 'none', pointerEvents: 'none' }} />
+          {/* Visual brush cursor circle */}
+          {tool === 'brush' && cursorPos && (
+            <div style={{
+              position: 'absolute',
+              left: cursorPos.x,
+              top: cursorPos.y,
+              width: brushSize,
+              height: brushSize,
+              transform: 'translate(-50%, -50%)',
+              border: '2px solid rgba(239,68,68,0.9)',
+              background: 'rgba(239,68,68,0.15)',
+              borderRadius: '50%',
+              pointerEvents: 'none',
+              zIndex: 20,
+            }} />
           )}
 
           {/* Text Objects Overlay */}
