@@ -27,6 +27,9 @@ const ENGLISH_FONTS = [
   { name: 'Roboto Slab', label: 'Roboto Slab' },
 ];
 
+// Global map to hold background tasks so they survive client-side navigations
+const backgroundTasks = new Map<string, Promise<string>>();
+
 // Helper: sample average color of a 5x5 area at (x, y)
 function sampleCorner(ctx: CanvasRenderingContext2D, x: number, y: number, canvasW: number, canvasH: number): [number, number, number] {
   const sx = Math.max(0, Math.min(canvasW - 5, Math.round(x - 2)));
@@ -116,11 +119,38 @@ function StudioContent() {
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
         
-        // Check for cached version
+        // Check for cached version or active background task
+        const activeTask = backgroundTasks.get(mediaUrl);
         const cacheKey = `studio_cache_${mediaUrl}`;
         const cachedData = localStorage.getItem(cacheKey);
 
-        if (cachedData) {
+        if (activeTask) {
+          setIsErasing(true);
+          // If there's an active task, we just load the *current* image first
+          // so the user sees it, and then we wait for the task to finish.
+          if (cachedData) {
+             const cachedImg = new window.Image();
+             cachedImg.onload = () => { ctx.drawImage(cachedImg, 0, 0); setIsLoaded(true); setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]); };
+             cachedImg.src = cachedData;
+          } else {
+             ctx.drawImage(img, 0, 0); setIsLoaded(true); setUndoStack([ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+          }
+
+          activeTask.then(finalBase64 => {
+             const finalImg = new window.Image();
+             finalImg.onload = () => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(finalImg, 0, 0);
+                setUndoStack(prev => [...prev.slice(-19), ctx.getImageData(0, 0, canvas.width, canvas.height)]);
+                toast.success('Background task finished!');
+                setIsErasing(false);
+             };
+             finalImg.src = finalBase64;
+          }).catch(err => {
+             toast.error('Background task failed');
+             setIsErasing(false);
+          });
+        } else if (cachedData) {
           const cachedImg = new window.Image();
           cachedImg.onload = () => {
             ctx.drawImage(cachedImg, 0, 0);
@@ -243,66 +273,105 @@ function StudioContent() {
     saveSnapshot();
     setIsErasing(true);
 
-    try {
-      // 1. Prepare a cropped version of the selection with padding for context
-      const padding = 40;
-      const cropX = Math.max(0, selection.x - padding);
-      const cropY = Math.max(0, selection.y - padding);
-      const cropW = Math.min(canvas.width - cropX, selection.width + padding * 2);
-      const cropH = Math.min(canvas.height - cropY, selection.height + padding * 2);
+    const padding = 40;
+    const cropX = Math.max(0, selection.x - padding);
+    const cropY = Math.max(0, selection.y - padding);
+    const cropW = Math.min(canvas.width - cropX, selection.width + padding * 2);
+    const cropH = Math.min(canvas.height - cropY, selection.height + padding * 2);
 
-      const offCanvas = document.createElement('canvas');
-      offCanvas.width = cropW;
-      offCanvas.height = cropH;
-      const offCtx = offCanvas.getContext('2d')!;
-      
-      // Draw the region into the small off-screen canvas
-      offCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-      const croppedBase64 = offCanvas.toDataURL('image/png');
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = cropW;
+    offCanvas.height = cropH;
+    const offCtx = offCanvas.getContext('2d')!;
+    
+    offCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    const croppedBase64 = offCanvas.toDataURL('image/png');
+    
+    // Save full canvas state so the background task can stitch it even if component unmounts
+    const fullCanvasBase64 = canvas.toDataURL('image/png');
 
-      // 2. Call the AI API with only the crop
-      const response = await fetch('/api/studio/erase', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: croppedBase64, // Only the small patch!
-          selection: {
-            x: Math.round(selection.x - cropX), // Local coordinates within the crop
-            y: Math.round(selection.y - cropY),
-            width: Math.round(selection.width),
-            height: Math.round(selection.height),
-            full_x: Math.round(selection.x), // Original coordinates if needed
-            full_y: Math.round(selection.y)
-          }
-        })
-      });
+    const processTask = async () => {
+      try {
+        const response = await fetch('/api/studio/erase', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: croppedBase64,
+            selection: {
+              x: Math.round(selection.x - cropX),
+              y: Math.round(selection.y - cropY),
+              width: Math.round(selection.width),
+              height: Math.round(selection.height),
+              full_x: Math.round(selection.x),
+              full_y: Math.round(selection.y)
+            }
+          })
+        });
 
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'AI request failed');
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.error || 'AI request failed');
+        }
+
+        const { result } = await response.json();
+
+        return new Promise<string>((resolve, reject) => {
+          const origImg = new window.Image();
+          origImg.crossOrigin = 'anonymous';
+          origImg.onload = () => {
+            const stitchCanvas = document.createElement('canvas');
+            stitchCanvas.width = origImg.width;
+            stitchCanvas.height = origImg.height;
+            const stitchCtx = stitchCanvas.getContext('2d')!;
+            stitchCtx.drawImage(origImg, 0, 0);
+
+            const patchImg = new window.Image();
+            patchImg.crossOrigin = 'anonymous';
+            patchImg.onload = () => {
+              stitchCtx.drawImage(patchImg, cropX, cropY, cropW, cropH);
+              const finalBase64 = stitchCanvas.toDataURL('image/png', 0.8);
+              
+              try {
+                localStorage.setItem(`studio_cache_${mediaUrl}`, finalBase64);
+              } catch (e) {}
+              
+              resolve(finalBase64);
+            };
+            patchImg.onerror = () => reject(new Error('Failed to load AI patch'));
+            patchImg.src = result;
+          };
+          origImg.onerror = () => reject(new Error('Failed to load original image'));
+          origImg.src = fullCanvasBase64;
+        });
+      } catch (err) {
+        throw err;
       }
+    };
 
-      const { result } = await response.json();
+    const task = processTask();
+    backgroundTasks.set(mediaUrl, task);
 
-      // 3. Stitch the cleaned patch back
-      const newImg = new window.Image();
-      newImg.crossOrigin = 'anonymous';
-      newImg.onload = () => {
-        // Draw the cleaned patch exactly over where we took it from
-        ctx.drawImage(newImg, cropX, cropY, cropW, cropH);
-        setSelection(null);
-        toast.success('AI patch applied!');
-      };
-      newImg.onerror = () => {
-        throw new Error('Failed to load the AI-cleaned patch');
-      };
-      newImg.src = result;
-
+    try {
+      const finalBase64 = await task;
+      
+      // If we are still mounted, update the canvas
+      if (canvasRef.current) {
+        const finalImg = new window.Image();
+        finalImg.onload = () => {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(finalImg, 0, 0);
+          setSelection(null);
+          toast.success('AI patch applied!');
+        };
+        finalImg.src = finalBase64;
+      } else {
+        toast.success('Background task finished successfully!');
+      }
     } catch (err: any) {
-      toast.error(err.message || 'AI Erase failed');
-      console.error(err);
+      if (canvasRef.current) toast.error(err.message || 'AI Erase failed');
     } finally {
-      setIsErasing(false);
+      backgroundTasks.delete(mediaUrl);
+      if (canvasRef.current) setIsErasing(false);
     }
   };
 
@@ -570,7 +639,22 @@ function StudioContent() {
               background: 'rgba(99, 102, 241, 0.12)',
               pointerEvents: 'none',
               zIndex: 5,
-            }} />
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              {isErasing && (
+                <div style={{ background: 'rgba(0,0,0,0.6)', padding: 12, borderRadius: 50, display: 'flex', alignItems: 'center', gap: 8, color: '#fff' }}>
+                  <Loader2 size={16} className="spin" />
+                  <span style={{ fontSize: 12, fontWeight: 500 }}>AI is working...</span>
+                </div>
+              )}
+            </div>
+          )}
+          
+          {/* Block canvas interactions when processing */}
+          {isErasing && (
+            <div style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'not-allowed' }} />
           )}
         </div>
 

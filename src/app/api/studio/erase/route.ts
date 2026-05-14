@@ -24,10 +24,21 @@ export async function POST(req: NextRequest) {
       throw new Error(`AI Webhook error: ${response.statusText}`);
     }
 
-    const data = await response.json();
-    
-    // Support both direct base64 or a URL response
-    const resultImage = data.image || data.url || data.media_url;
+    const contentType = response.headers.get('content-type') || '';
+    let resultImage = '';
+
+    if (contentType.includes('image/') || contentType.includes('application/octet-stream')) {
+      // Handle binary response directly
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const base64 = buffer.toString('base64');
+      const mime = contentType.includes('image/') ? contentType : 'image/png';
+      resultImage = `data:${mime};base64,${base64}`;
+    } else {
+      // Handle JSON response
+      const data = await response.json();
+      resultImage = data.image || data.url || data.media_url;
+    }
 
     if (!resultImage) {
       throw new Error('AI Webhook did not return an image');
