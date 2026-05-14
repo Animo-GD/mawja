@@ -465,17 +465,21 @@ function StudioContent() {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(finalImg, 0, 0);
           setSelection(null);
+          setIsErasing(false);
           toast.success('AI patch applied!');
         };
+        finalImg.onerror = () => setIsErasing(false);
         finalImg.src = finalBase64;
       } else {
         toast.success('Background task finished successfully!');
+        setIsErasing(false);
       }
     } catch (err: any) {
       if (canvasRef.current) toast.error(err.message || 'AI Erase failed');
+      setIsErasing(false);
     } finally {
       backgroundTasks.delete(mediaUrl);
-      if (canvasRef.current) setIsErasing(false);
+      setIsErasing(false);
     }
   };
 

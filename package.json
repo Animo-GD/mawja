@@ -10,9 +10,6 @@
   },
   "dependencies": {
     "@auth/pg-adapter": "^1.11.2",
-    "@remotion/bundler": "^4.0.458",
-    "@remotion/player": "^4.0.455",
-    "@remotion/renderer": "^4.0.458",
     "@supabase/supabase-js": "^2.105.1",
     "@tanstack/react-query": "^5.100.6",
     "@tanstack/react-query-devtools": "^5.100.6",
@@ -24,8 +21,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-hot-toast": "^2.6.0",
-    "recharts": "^3.8.1",
-    "remotion": "^4.0.455"
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@types/node": "^20",
