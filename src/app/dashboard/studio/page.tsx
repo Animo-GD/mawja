@@ -3,10 +3,10 @@
 import { useRef, useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useLang } from '@/lib/LanguageContext';
-import { MousePointer2, Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon, RotateCcw, Trash2 } from 'lucide-react';
+import { Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon, RotateCcw, Trash2, Paintbrush } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
-type Tool = 'select' | 'text';
+type Tool = 'select' | 'text' | 'brush';
 
 interface TextObject {
   id: string;
@@ -75,6 +75,7 @@ function StudioContent() {
   const mediaUrl = searchParams.get('media_url') || '';
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const maskCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -105,6 +106,11 @@ function StudioContent() {
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+
+  // Brush/mask tool state
+  const [brushSize, setBrushSize] = useState(40);
+  const [isDrawingMask, setIsDrawingMask] = useState(false);
+  const [hasMask, setHasMask] = useState(false);
 
   const isVideo = /\.(mp4|webm|ogg|mov)(\?|$)/i.test(mediaUrl);
 
@@ -177,6 +183,11 @@ function StudioContent() {
           cachedImg.src = cachedData;
         } else {
           ctx.drawImage(img, 0, 0);
+          // Sync mask canvas dimensions
+          if (maskCanvasRef.current) {
+            maskCanvasRef.current.width = canvas.width;
+            maskCanvasRef.current.height = canvas.height;
+          }
           setIsLoaded(true);
           setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
         }
@@ -245,12 +256,14 @@ function StudioContent() {
     };
   };
 
-  // ── Mouse events ──────────────────────────────────────────────────
   const onMouseDown = (e: React.MouseEvent<HTMLElement>) => {
     if (!isLoaded) return;
     const pos = getCanvasPos(e);
 
-    if (tool === 'select') {
+    if (tool === 'brush') {
+      setIsDrawingMask(true);
+      paintMask(e);
+    } else if (tool === 'select') {
       setSelectedTextId(null);
       setSelectionStart(pos);
       setSelection({ x: pos.x, y: pos.y, width: 0, height: 0 });
@@ -262,20 +275,68 @@ function StudioContent() {
     }
   };
 
+  const paintMask = (e: React.MouseEvent<HTMLElement>) => {
+    const maskCanvas = maskCanvasRef.current;
+    const canvas = canvasRef.current;
+    if (!maskCanvas || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    const ctx = maskCanvas.getContext('2d')!;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.55)';
+    ctx.beginPath();
+    ctx.arc(x, y, (brushSize / 2) * scaleX, 0, Math.PI * 2);
+    ctx.fill();
+    setHasMask(true);
+  };
+
+  const clearMask = () => {
+    const maskCanvas = maskCanvasRef.current;
+    if (!maskCanvas) return;
+    maskCanvas.getContext('2d')!.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    setHasMask(false);
+  };
+
+  const getMaskBase64 = (): string | null => {
+    const maskCanvas = maskCanvasRef.current;
+    if (!maskCanvas) return null;
+    const bw = document.createElement('canvas');
+    bw.width = maskCanvas.width;
+    bw.height = maskCanvas.height;
+    const bwCtx = bw.getContext('2d')!;
+    bwCtx.fillStyle = 'black';
+    bwCtx.fillRect(0, 0, bw.width, bw.height);
+    const src = maskCanvas.getContext('2d')!.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    const dst = bwCtx.getImageData(0, 0, bw.width, bw.height);
+    for (let i = 0; i < src.data.length; i += 4) {
+      if (src.data[i + 3] > 10) {
+        dst.data[i] = 255; dst.data[i+1] = 255; dst.data[i+2] = 255; dst.data[i+3] = 255;
+      }
+    }
+    bwCtx.putImageData(dst, 0, 0);
+    return bw.toDataURL('image/png');
+  };
+
   const onMouseMove = (e: React.MouseEvent<HTMLElement>) => {
+    if (tool === 'brush' && isDrawingMask) {
+      paintMask(e);
+      return;
+    }
     const pos = getCanvasPos(e);
 
     if (draggingId) {
-      setTexts(prev => prev.map(t => 
-        t.id === draggingId 
-          ? { ...t, x: pos.x - (dragStart?.x || 0), y: pos.y - (dragStart?.y || 0) } 
+      setTexts(prev => prev.map(t =>
+        t.id === draggingId
+          ? { ...t, x: pos.x - (dragStart?.x || 0), y: pos.y - (dragStart?.y || 0) }
           : t
       ));
       return;
     }
 
     if (!isSelecting || !selectionStart || tool !== 'select') return;
-    
     setSelection({
       x: Math.max(0, Math.min(canvasRef.current!.width, Math.min(selectionStart.x, pos.x))),
       y: Math.max(0, Math.min(canvasRef.current!.height, Math.min(selectionStart.y, pos.y))),
@@ -286,6 +347,7 @@ function StudioContent() {
 
   const onMouseUp = () => {
     setIsSelecting(false);
+    setIsDrawingMask(false);
     setDraggingId(null);
     setDragStart(null);
   };
@@ -364,9 +426,14 @@ function StudioContent() {
 
   // ── Erase logic (AI – Full Image) ────────────────────────────────
   const handleEraseSelection = async () => {
-    if (!selection || !canvasRef.current || selection.width < 1 || selection.height < 1) return;
-    
     const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Brush mode: need a painted mask
+    if (tool === 'brush' && !hasMask) return;
+    // Select mode: need a drawn rectangle
+    if (tool === 'select' && (!selection || selection.width < 1 || selection.height < 1)) return;
+
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
     
     saveSnapshot();
@@ -374,21 +441,18 @@ function StudioContent() {
 
     // Send the full canvas image to the AI
     const fullCanvasBase64 = canvas.toDataURL('image/png');
+    const maskBase64 = tool === 'brush' ? getMaskBase64() : null;
 
     const processTask = async () => {
       try {
+        const body = maskBase64
+          ? { image: fullCanvasBase64, mask: maskBase64 }
+          : { image: fullCanvasBase64, selection: { x: Math.round(selection!.x), y: Math.round(selection!.y), width: Math.round(selection!.width), height: Math.round(selection!.height) } };
+
         const response = await fetch('/api/studio/erase', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image: fullCanvasBase64,
-            selection: {
-              x: Math.round(selection.x),
-              y: Math.round(selection.y),
-              width: Math.round(selection.width),
-              height: Math.round(selection.height),
-            }
-          })
+          body: JSON.stringify(body),
         });
 
         if (!response.ok) {
@@ -405,6 +469,7 @@ function StudioContent() {
 
         return result;
       } catch (err) {
+
         throw err;
       }
     };
@@ -542,11 +607,12 @@ function StudioContent() {
         <div style={{ padding: '12px 8px', borderBottom: '1px solid #f0f0f0' }}>
           {([
             { id: 'select' as Tool, icon: <Eraser size={16} />, label: 'Retouch' },
+            { id: 'brush' as Tool, icon: <Paintbrush size={16} />, label: 'Brush Erase' },
             { id: 'text'   as Tool, icon: <Type size={16} />,   label: 'Text' },
           ]).map(({ id, icon, label }) => (
             <button
               key={id}
-              onClick={() => { setTool(id); setSelection(null); }}
+              onClick={() => { setTool(id); setSelection(null); if (id !== 'brush') clearMask(); }}
               style={{
                 width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 padding: '11px 14px', borderRadius: 8, marginBottom: 2,
@@ -556,7 +622,7 @@ function StudioContent() {
               }}
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>{icon} {label}</span>
-              {tool === id && <X size={13} style={{ color: '#999' }} onClick={e => { e.stopPropagation(); setTool('select'); setSelection(null); }} />}
+              {tool === id && <X size={13} style={{ color: '#999' }} onClick={e => { e.stopPropagation(); setTool('select'); setSelection(null); clearMask(); }} />}
             </button>
           ))}
         </div>
@@ -596,9 +662,18 @@ function StudioContent() {
         >
           <canvas
             ref={canvasRef}
-            style={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: 'calc(100vh - 100px)', cursor: tool === 'select' ? 'crosshair' : 'text', touchAction: 'none' }}
+            style={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: 'calc(100vh - 100px)', cursor: tool === 'select' ? 'crosshair' : tool === 'brush' ? 'none' : 'text', touchAction: 'none' }}
             onMouseDown={onMouseDown}
           />
+          {/* Mask canvas overlay – shows painted area in red */}
+          <canvas
+            ref={maskCanvasRef}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 3 }}
+          />
+          {/* Custom brush cursor */}
+          {tool === 'brush' && isLoaded && (
+            <div id="brush-cursor" style={{ position: 'absolute', inset: 0, zIndex: 4, cursor: 'none', pointerEvents: 'none' }} />
+          )}
 
           {/* Text Objects Overlay */}
           {texts.map(t => {
@@ -648,6 +723,28 @@ function StudioContent() {
             </div>
           )}
           {isErasing && <div style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'not-allowed' }} />}
+
+          {/* Brush erase controls — floating panel */}
+          {tool === 'brush' && isLoaded && (
+            <div style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, minWidth: 180, boxShadow: '0 4px 24px rgba(0,0,0,0.12)', zIndex: 8 }}>
+              <div>
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#555', marginBottom: 6 }}>Brush Size — {brushSize}px</div>
+                <input type="range" min={10} max={150} value={brushSize} onChange={e => setBrushSize(+e.target.value)} style={{ width: '100%' }} />
+              </div>
+              <button
+                onClick={handleEraseSelection}
+                disabled={!hasMask || isErasing}
+                style={{ background: hasMask && !isErasing ? '#ef4444' : '#ccc', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 12px', fontWeight: 600, fontSize: '0.85rem', cursor: hasMask && !isErasing ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}
+              >
+                {isErasing ? <><Loader2 size={13} className="spin" /> Working…</> : <><Eraser size={13} /> AI Erase</>}
+              </button>
+              {hasMask && !isErasing && (
+                <button onClick={clearMask} style={{ background: 'transparent', border: '1px solid #ddd', borderRadius: 8, padding: '7px 12px', fontSize: '0.82rem', cursor: 'pointer', color: '#666' }}>
+                  Clear Mask
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Text input modal */}

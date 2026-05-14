@@ -43,43 +43,45 @@ class LamaInpainter:
     def inpaint(self, payload: dict) -> dict:
         """
         Accepts:
-          {
-            "image": "data:image/png;base64,...",   # Full canvas image
-            "selection": { "x": int, "y": int, "width": int, "height": int }
-          }
+          Option A (brush mask):
+            { "image": "data:image/png;base64,...", "mask": "data:image/png;base64,..." }
+          Option B (rectangle selection):
+            { "image": "data:image/png;base64,...", "selection": { "x": int, "y": int, "width": int, "height": int } }
 
         Returns:
-          { "image": "data:image/png;base64,..." }  # Cleaned image, same size
+          { "image": "data:image/png;base64,..." }
         """
         from PIL import Image, ImageDraw
         import numpy as np
 
-        # ── 1. Decode the input image ──────────────────────────────────────
-        image_b64 = payload.get("image", "")
-        if "," in image_b64:
-            image_b64 = image_b64.split(",")[1]
+        def decode_b64_image(b64: str) -> Image.Image:
+            if "," in b64:
+                b64 = b64.split(",")[1]
+            return Image.open(io.BytesIO(base64.b64decode(b64)))
 
-        image_bytes = base64.b64decode(image_b64)
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        # ── 1. Decode the input image ──────────────────────────────────────
+        image = decode_b64_image(payload.get("image", "")).convert("RGB")
         w, h = image.size
 
-        # ── 2. Build mask from selection rectangle ─────────────────────────
-        sel = payload.get("selection", {})
-        x = max(0, int(sel.get("x", 0)))
-        y = max(0, int(sel.get("y", 0)))
-        sw = min(int(sel.get("width", 100)), w - x)
-        sh = min(int(sel.get("height", 100)), h - y)
+        # ── 2. Build mask ──────────────────────────────────────────────────
+        if "mask" in payload and payload["mask"]:
+            # Option A: use the painted brush mask directly
+            mask_img = decode_b64_image(payload["mask"]).convert("L")
+            mask = mask_img.resize((w, h), Image.NEAREST)
+        else:
+            # Option B: build mask from selection rectangle
+            sel = payload.get("selection", {})
+            x = max(0, int(sel.get("x", 0)))
+            y = max(0, int(sel.get("y", 0)))
+            sw = min(int(sel.get("width", 100)), w - x)
+            sh = min(int(sel.get("height", 100)), h - y)
+            padding = max(4, min(sw, sh) // 20)
+            mx, my = max(0, x - padding), max(0, y - padding)
+            mx2, my2 = min(w, x + sw + padding), min(h, y + sh + padding)
 
-        # Add a small feather/padding to the mask for better blending
-        padding = max(4, min(sw, sh) // 20)
-        mx = max(0, x - padding)
-        my = max(0, y - padding)
-        mx2 = min(w, x + sw + padding)
-        my2 = min(h, y + sh + padding)
-
-        mask = Image.new("L", (w, h), 0)   # Black = keep
-        draw = ImageDraw.Draw(mask)
-        draw.rectangle([mx, my, mx2, my2], fill=255)  # White = inpaint
+            mask = Image.new("L", (w, h), 0)
+            draw = ImageDraw.Draw(mask)
+            draw.rectangle([mx, my, mx2, my2], fill=255)
 
         # ── 3. Run LaMa inpainting ─────────────────────────────────────────
         result = self.model(image, mask)
@@ -90,3 +92,4 @@ class LamaInpainter:
         result_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         return {"image": f"data:image/png;base64,{result_b64}"}
+
