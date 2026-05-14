@@ -273,85 +273,51 @@ function StudioContent() {
     saveSnapshot();
 
     try {
-      const borderSize = Math.max(10, Math.round(Math.min(selection.width, selection.height) * 0.2));
-      const sampleX = Math.max(0, selection.x - borderSize);
-      const sampleY = Math.max(0, selection.y - borderSize);
-      const sampleW = Math.min(canvas.width - sampleX, selection.width + borderSize * 2);
-      const sampleH = Math.min(canvas.height - sampleY, selection.height + borderSize * 2);
+      // 1. Get average color of the perimeter
+      const p = 4; // 4 pixels padding
+      const sx = Math.max(0, selection.x - p);
+      const sy = Math.max(0, selection.y - p);
+      const sw = Math.min(canvas.width - sx, selection.width + p * 2);
+      const sh = Math.min(canvas.height - sy, selection.height + p * 2);
       
-      const surroundingData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
-      const borderPixels: [number, number, number][] = [];
-      const relSelX = selection.x - sampleX;
-      const relSelY = selection.y - sampleY;
+      const imgData = ctx.getImageData(sx, sy, sw, sh);
+      let r = 0, g = 0, b = 0, count = 0;
       
-      for (let y = 0; y < sampleH; y++) {
-        for (let x = 0; x < sampleW; x++) {
-          const isAtEdge = x < 3 || y < 3 || x > sampleW - 4 || y > sampleH - 4;
-          const insideSel =
-            x >= relSelX && x < relSelX + selection.width &&
-            y >= relSelY && y < relSelY + selection.height;
-            
-          if (!insideSel || isAtEdge) {
-            const idx = (y * sampleW + x) * 4;
-            borderPixels.push([
-              surroundingData.data[idx],
-              surroundingData.data[idx + 1],
-              surroundingData.data[idx + 2],
-            ]);
+      const innerX = selection.x - sx;
+      const innerY = selection.y - sy;
+      
+      for (let y = 0; y < sh; y++) {
+        for (let x = 0; x < sw; x++) {
+          const isInside = x >= innerX && x < innerX + selection.width && y >= innerY && y < innerY + selection.height;
+          if (!isInside) {
+            const idx = (y * sw + x) * 4;
+            r += imgData.data[idx];
+            g += imgData.data[idx+1];
+            b += imgData.data[idx+2];
+            count++;
           }
         }
       }
       
-      let avgR = 255, avgG = 255, avgB = 255;
-      if (borderPixels.length > 0) {
-        avgR = Math.round(borderPixels.reduce((s, p) => s + p[0], 0) / borderPixels.length);
-        avgG = Math.round(borderPixels.reduce((s, p) => s + p[1], 0) / borderPixels.length);
-        avgB = Math.round(borderPixels.reduce((s, p) => s + p[2], 0) / borderPixels.length);
-      }
+      const avgR = count > 0 ? Math.round(r / count) : 255;
+      const avgG = count > 0 ? Math.round(g / count) : 255;
+      const avgB = count > 0 ? Math.round(b / count) : 255;
+
+      // 2. Draw solid average color
+      ctx.fillStyle = `rgb(${avgR}, ${avgG}, ${avgB})`;
+      ctx.fillRect(selection.x, selection.y, selection.width, selection.height);
       
-      const topLeft = sampleCorner(ctx, selection.x - 2, selection.y - 2, canvas.width, canvas.height);
-      const topRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y - 2, canvas.width, canvas.height);
-      const bottomLeft = sampleCorner(ctx, selection.x - 2, selection.y + selection.height + 2, canvas.width, canvas.height);
-      const bottomRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y + selection.height + 2, canvas.width, canvas.height);
-      
-      const fillW = Math.ceil(selection.width);
-      const fillH = Math.ceil(selection.height);
-      const fillData = ctx.createImageData(fillW, fillH);
-      
-      for (let fy = 0; fy < fillH; fy++) {
-        for (let fx = 0; fx < fillW; fx++) {
-          const tx = fx / selection.width;
-          const ty = fy / selection.height;
-          
-          const r = bilinear(topLeft[0], topRight[0], bottomLeft[0], bottomRight[0], tx, ty);
-          const g = bilinear(topLeft[1], topRight[1], bottomLeft[1], bottomRight[1], tx, ty);
-          const b = bilinear(topLeft[2], topRight[2], bottomLeft[2], bottomRight[2], tx, ty);
-          
-          const idx = (fy * fillW + fx) * 4;
-          // Mix 70% interpolated, 30% average for noise reduction
-          fillData.data[idx]     = Math.round(r * 0.7 + avgR * 0.3);
-          fillData.data[idx + 1] = Math.round(g * 0.7 + avgG * 0.3);
-          fillData.data[idx + 2] = Math.round(b * 0.7 + avgB * 0.3);
-          fillData.data[idx + 3] = 255;
-        }
-      }
-      
-      ctx.putImageData(fillData, Math.round(selection.x), Math.round(selection.y));
-      
-      // Edge blending
+      // 3. Draw blurred overlapping borders to feather the edge
       ctx.save();
       ctx.globalCompositeOperation = 'source-over';
-      for (let i = 6; i > 0; i--) {
-        ctx.globalAlpha = 0.1;
-        ctx.fillStyle = `rgb(${avgR},${avgG},${avgB})`;
-        ctx.filter = 'blur(2px)';
-        ctx.fillRect(
-          selection.x - i * 0.5,
-          selection.y - i * 0.5,
-          selection.width + i,
-          selection.height + i
-        );
-      }
+      ctx.filter = 'blur(4px)';
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = `rgb(${avgR}, ${avgG}, ${avgB})`;
+      ctx.fillRect(selection.x - 2, selection.y - 2, selection.width + 4, selection.height + 4);
+      
+      ctx.filter = 'blur(8px)';
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(selection.x - 4, selection.y - 4, selection.width + 8, selection.height + 8);
       ctx.restore();
       
       setSelection(null);
