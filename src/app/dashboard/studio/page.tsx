@@ -197,7 +197,7 @@ function StudioContent() {
     setIsSelecting(false);
   };
 
-  // ── Erase logic ───────────────────────────────────────────────────
+  // ── Erase logic (AI Webhook) ──────────────────────────────────────
   const handleEraseSelection = async () => {
     if (!selection || !canvasRef.current || selection.width < 1 || selection.height < 1) return;
     
@@ -208,91 +208,48 @@ function StudioContent() {
     setIsErasing(true);
 
     try {
-      const borderSize = Math.max(10, Math.round(Math.min(selection.width, selection.height) * 0.2));
-      const sampleX = Math.max(0, selection.x - borderSize);
-      const sampleY = Math.max(0, selection.y - borderSize);
-      const sampleW = Math.min(canvas.width - sampleX, selection.width + borderSize * 2);
-      const sampleH = Math.min(canvas.height - sampleY, selection.height + borderSize * 2);
-      
-      const surroundingData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
-      const borderPixels: [number, number, number][] = [];
-      const relSelX = selection.x - sampleX;
-      const relSelY = selection.y - sampleY;
-      
-      for (let y = 0; y < sampleH; y++) {
-        for (let x = 0; x < sampleW; x++) {
-          const isAtEdge = x < 3 || y < 3 || x > sampleW - 4 || y > sampleH - 4;
-          const insideSel =
-            x >= relSelX && x < relSelX + selection.width &&
-            y >= relSelY && y < relSelY + selection.height;
-            
-          if (!insideSel || isAtEdge) {
-            const idx = (y * sampleW + x) * 4;
-            borderPixels.push([
-              surroundingData.data[idx],
-              surroundingData.data[idx + 1],
-              surroundingData.data[idx + 2],
-            ]);
+      // 1. Get the current canvas as base64
+      const base64Image = canvas.toDataURL('image/png');
+
+      // 2. Call the AI API
+      const response = await fetch('/api/studio/erase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: base64Image,
+          selection: {
+            x: Math.round(selection.x),
+            y: Math.round(selection.y),
+            width: Math.round(selection.width),
+            height: Math.round(selection.height)
           }
-        }
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'AI request failed');
       }
-      
-      let avgR = 255, avgG = 255, avgB = 255;
-      if (borderPixels.length > 0) {
-        avgR = Math.round(borderPixels.reduce((s, p) => s + p[0], 0) / borderPixels.length);
-        avgG = Math.round(borderPixels.reduce((s, p) => s + p[1], 0) / borderPixels.length);
-        avgB = Math.round(borderPixels.reduce((s, p) => s + p[2], 0) / borderPixels.length);
-      }
-      
-      const topLeft = sampleCorner(ctx, selection.x - 2, selection.y - 2, canvas.width, canvas.height);
-      const topRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y - 2, canvas.width, canvas.height);
-      const bottomLeft = sampleCorner(ctx, selection.x - 2, selection.y + selection.height + 2, canvas.width, canvas.height);
-      const bottomRight = sampleCorner(ctx, selection.x + selection.width + 2, selection.y + selection.height + 2, canvas.width, canvas.height);
-      
-      const fillW = Math.ceil(selection.width);
-      const fillH = Math.ceil(selection.height);
-      const fillData = ctx.createImageData(fillW, fillH);
-      
-      for (let fy = 0; fy < fillH; fy++) {
-        for (let fx = 0; fx < fillW; fx++) {
-          const tx = fx / selection.width;
-          const ty = fy / selection.height;
-          
-          const r = bilinear(topLeft[0], topRight[0], bottomLeft[0], bottomRight[0], tx, ty);
-          const g = bilinear(topLeft[1], topRight[1], bottomLeft[1], bottomRight[1], tx, ty);
-          const b = bilinear(topLeft[2], topRight[2], bottomLeft[2], bottomRight[2], tx, ty);
-          
-          const idx = (fy * fillW + fx) * 4;
-          // Mix 70% interpolated, 30% average for noise reduction
-          fillData.data[idx]     = Math.round(r * 0.7 + avgR * 0.3);
-          fillData.data[idx + 1] = Math.round(g * 0.7 + avgG * 0.3);
-          fillData.data[idx + 2] = Math.round(b * 0.7 + avgB * 0.3);
-          fillData.data[idx + 3] = 255;
-        }
-      }
-      
-      ctx.putImageData(fillData, Math.round(selection.x), Math.round(selection.y));
-      
-      // Edge blending
-      ctx.save();
-      ctx.globalCompositeOperation = 'source-over';
-      for (let i = 6; i > 0; i--) {
-        ctx.globalAlpha = 0.1;
-        ctx.fillStyle = `rgb(${avgR},${avgG},${avgB})`;
-        ctx.filter = 'blur(2px)';
-        ctx.fillRect(
-          selection.x - i * 0.5,
-          selection.y - i * 0.5,
-          selection.width + i,
-          selection.height + i
-        );
-      }
-      ctx.restore();
-      
-      setSelection(null);
-      toast.success('Area erased!');
-    } catch (err) {
-      toast.error('Erase failed');
+
+      const { result } = await response.json();
+
+      // 3. Apply the result (can be base64 or URL)
+      const newImg = new window.Image();
+      newImg.crossOrigin = 'anonymous';
+      newImg.onload = () => {
+        // Clear and draw the new AI-processed image
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(newImg, 0, 0);
+        setSelection(null);
+        toast.success('AI removed the text!');
+      };
+      newImg.onerror = () => {
+        throw new Error('Failed to load the AI-generated image');
+      };
+      newImg.src = result;
+
+    } catch (err: any) {
+      toast.error(err.message || 'AI Erase failed');
       console.error(err);
     } finally {
       setIsErasing(false);
