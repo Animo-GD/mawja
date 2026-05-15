@@ -738,12 +738,13 @@ function StudioContent() {
     setSelectedTextId(null);
   };
 
-  // ── Download (save directly to device) ──────────────────────────
-  const handleSave = () => {
+  // ── Save to Gallery ──────────────────────────────────────────────
+  const handleSave = async () => {
     const canvas = canvasRef.current;
     if (!canvas || !isLoaded) return;
     setIsSaving(true);
-    // Composite image + text overlays
+
+    // Composite image + all text overlays onto a temp canvas
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = canvas.width;
     tempCanvas.height = canvas.height;
@@ -775,18 +776,26 @@ function StudioContent() {
       }
       tctx.restore();
     });
-    tempCanvas.toBlob((blob) => {
+
+    tempCanvas.toBlob(async (blob) => {
       if (!blob) { toast.error('Export failed'); setIsSaving(false); return; }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `mawja-studio-${Date.now()}.png`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success('Image downloaded!');
-      setIsSaving(false);
+      try {
+        const formData = new FormData();
+        formData.append('file', blob, `studio_${Date.now()}.png`);
+        const res = await fetch('/api/studio/save-image', { method: 'POST', body: formData });
+        if (!res.ok) {
+          const { error } = await res.json();
+          throw new Error(error || `Upload failed (${res.status})`);
+        }
+        toast.success('Saved to Gallery! ✓', { duration: 3000 });
+      } catch (err: any) {
+        toast.error(err.message || 'Failed to save to gallery');
+      } finally {
+        setIsSaving(false);
+      }
     }, 'image/png');
   };
+
 
   if (!mediaUrl || isVideo) {
     return (
@@ -1011,7 +1020,7 @@ function StudioContent() {
         {/* Save */}
         <div style={{ padding: 12, borderTop: '1px solid #f0f0f0' }}>
           <button className="btn btn-primary" onClick={handleSave} disabled={isSaving || !isLoaded} style={{ width: '100%', justifyContent: 'center', borderRadius: 8, fontWeight: 600 }}>
-            {isSaving ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 7 }} />Saving…</> : <><Save size={14} style={{ marginInlineEnd: 7 }} />Download</>}
+            {isSaving ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 7 }} />Saving…</> : <><Save size={14} style={{ marginInlineEnd: 7 }} />Save to Gallery</>}
           </button>
         </div>
       </div>
