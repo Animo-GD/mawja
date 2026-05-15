@@ -292,7 +292,7 @@ function StudioContent() {
     const radius = (brushSize / 2) * Math.max(scaleX, scaleY);
     const ctx = maskCanvas.getContext('2d')!;
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.25)';
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
@@ -327,13 +327,14 @@ function StudioContent() {
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLElement>) => {
-    // Always update brush cursor position
+    // Always track cursor position for brush cursor display
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      setCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    }
+
     if (tool === 'brush') {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        setCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-      }
       if (isDrawingMask) paintMask(e.clientX, e.clientY);
       return;
     }
@@ -657,13 +658,6 @@ function StudioContent() {
               {isErasing ? <><Loader2 size={14} className="spin" /> Working…</> : <><Eraser size={14} /> AI Erase</>}
             </button>
             <button
-              onClick={handleLocalErase}
-              disabled={isErasing}
-              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '9px 14px', borderRadius: 8, border: '1px solid #e5e5e5', background: 'transparent', cursor: isErasing ? 'not-allowed' : 'pointer', fontSize: '0.85rem', color: '#555' }}
-            >
-              <Eraser size={13} /> Fast Erase (Local)
-            </button>
-            <button
               onClick={() => setSelection(null)}
               style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '7px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.82rem', color: '#999' }}
             >
@@ -702,7 +696,7 @@ function StudioContent() {
         )}
 
         <div
-          style={{ position: 'relative', display: isLoaded ? 'inline-block' : 'none', maxWidth: '100%', maxHeight: '100%', boxShadow: '0 8px 48px rgba(0,0,0,0.14)', overflow: 'hidden' }}
+          style={{ position: 'relative', display: isLoaded ? 'inline-block' : 'none', maxWidth: '100%', maxHeight: '100%', boxShadow: '0 8px 48px rgba(0,0,0,0.14)', overflow: 'hidden', cursor: tool === 'brush' ? 'none' : 'auto' }}
           onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseLeave}
         >
           <canvas
