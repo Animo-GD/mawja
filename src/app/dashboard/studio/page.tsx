@@ -302,6 +302,22 @@ function StudioContent() {
     return () => { eraseAbortRef.current?.abort(); };
   }, []);
 
+  // ── Delete selected text with keyboard ──────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      // Don't intercept when user is typing in an input/textarea
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!selectedTextId) return;
+      e.preventDefault();
+      setTexts(prev => prev.filter(t => t.id !== selectedTextId));
+      setSelectedTextId(null);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [selectedTextId]);
+
   const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
