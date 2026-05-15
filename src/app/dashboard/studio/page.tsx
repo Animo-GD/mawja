@@ -3,7 +3,7 @@
 import { useRef, useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useLang } from '@/lib/LanguageContext';
-import { Eraser, Type, Undo2, Save, Loader2, Check, X, Image as ImageIcon, RotateCcw, Trash2, Paintbrush } from 'lucide-react';
+import { Eraser, Type, Undo2, Save, Loader2, X, Image as ImageIcon, RotateCcw, Trash2, Paintbrush } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 type Tool = 'select' | 'text' | 'brush';
@@ -115,11 +115,9 @@ function StudioContent() {
   const [undoStack, setUndoStack] = useState<{ imageData: ImageData; texts: TextObject[] }[]>([]);
 
   // Text tool state
-  const [showTextModal, setShowTextModal] = useState(false);
   const [pendingText, setPendingText] = useState('');
   const [textColor, setTextColor] = useState('#ffffff');
   const [fontSize, setFontSize] = useState(48);
-  const [textPos, setTextPos] = useState<{ x: number; y: number } | null>(null);
   const [fontFamily, setFontFamily] = useState('Inter');
   const [fontScript, setFontScript] = useState<'arabic' | 'english'>('english');
   const [fontWeight, setFontWeight] = useState('bold');
@@ -135,7 +133,6 @@ function StudioContent() {
   const [strokeEnabled, setStrokeEnabled] = useState(false);
   const [strokeColor, setStrokeColor] = useState('#000000');
   const [strokeWidth, setStrokeWidth] = useState(2);
-  const [textModalTab, setTextModalTab] = useState<'style' | 'effects'>('style');
 
   // Multi-text state
   const [texts, setTexts] = useState<TextObject[]>([]);
@@ -337,9 +334,20 @@ function StudioContent() {
       setSelection({ x: pos.x, y: pos.y, width: 0, height: 0 });
       setIsSelecting(true);
     } else if (tool === 'text') {
-      setSelectedTextId(null);
-      setTextPos(pos);
-      setShowTextModal(true);
+      if (!pendingText.trim()) { toast.error('Type your text in the panel first'); return; }
+      // Place text directly at click position — no modal
+      const newText: TextObject = {
+        id: Math.random().toString(36).substr(2, 9),
+        text: pendingText,
+        x: pos.x, y: pos.y,
+        fontSize, color: textColor, fontFamily, fontScript,
+        fontWeight, fontStyle,
+        opacity: textOpacity, letterSpacing, textTransform,
+        shadowEnabled, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY,
+        strokeEnabled, strokeColor, strokeWidth,
+      };
+      setTexts(prev => [...prev, newText]);
+      setSelectedTextId(newText.id);
     }
   };
 
@@ -441,6 +449,27 @@ function StudioContent() {
     hctx.drawImage(overlay, 0, 0);
     mctx.drawImage(helper, 0, 0);
     return mask.toDataURL('image/png');
+  };
+
+  // Compute bounding box of painted mask area (used as fallback `selection` for brush mode)
+  const getMaskBoundingBox = (): { x: number; y: number; width: number; height: number } | null => {
+    const overlay = maskOverlayRef.current;
+    if (!overlay || !hasMaskRef.current) return null;
+    const ctx = overlay.getContext('2d', { willReadFrequently: true })!;
+    const { data, width, height } = ctx.getImageData(0, 0, overlay.width, overlay.height);
+    let minX = width, minY = height, maxX = 0, maxY = 0, found = false;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] > 32) {
+        const px = (i / 4) % width;
+        const py = Math.floor(i / 4 / width);
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+        found = true;
+      }
+    }
+    return found ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 } : null;
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLElement>) => {
@@ -598,15 +627,26 @@ function StudioContent() {
     const maskBase64 = tool === 'brush' ? getMaskBase64() : null;
 
     try {
-      const body = maskBase64
-        ? { image: fullCanvasBase64, mask: maskBase64 }
-        : {
-            image: fullCanvasBase64,
-            selection: {
-              x: Math.round(selection!.x), y: Math.round(selection!.y),
-              width: Math.round(selection!.width), height: Math.round(selection!.height),
-            },
-          };
+      let body: Record<string, unknown>;
+      if (tool === 'brush') {
+        // Send both mask (precise pixel mask) AND selection (bounding box fallback)
+        // Modal uses whichever it supports — guarantees a result like selection mode
+        const bbox = getMaskBoundingBox();
+        body = {
+          image: fullCanvasBase64,
+          mask: maskBase64,
+          ...(bbox ? { selection: { x: Math.round(bbox.x), y: Math.round(bbox.y), width: Math.round(bbox.width), height: Math.round(bbox.height) } } : {}),
+        };
+        console.log('[Brush Erase] Sending mask + bbox:', bbox);
+      } else {
+        body = {
+          image: fullCanvasBase64,
+          selection: {
+            x: Math.round(selection!.x), y: Math.round(selection!.y),
+            width: Math.round(selection!.width), height: Math.round(selection!.height),
+          },
+        };
+      }
 
       const response = await fetch('/api/studio/erase', {
         method: 'POST',
@@ -785,7 +825,7 @@ function StudioContent() {
         {/* Tools */}
         <div style={{ padding: '12px 8px', borderBottom: '1px solid #f0f0f0' }}>
           {([
-            { id: 'select' as Tool, icon: <Eraser size={16} />, label: 'Retouch' },
+            { id: 'select' as Tool, icon: <Eraser size={16} />, label: 'Erase by Selection' },
             { id: 'brush' as Tool, icon: <Paintbrush size={16} />, label: 'Brush Erase' },
             { id: 'text'   as Tool, icon: <Type size={16} />,   label: 'Text' },
           ]).map(({ id, icon, label }) => (
@@ -835,6 +875,140 @@ function StudioContent() {
             <button onClick={() => setSelection(null)}
               style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.82rem', color: '#999' }}
             ><X size={12} /> Clear</button>
+          </div>
+        )}
+
+        {/* Text panel — in sidebar when text tool is active */}
+        {tool === 'text' && (
+          <div style={{ padding: '12px 10px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 11, overflowY: 'auto' }}>
+            {/* Text input */}
+            <div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Text Content</div>
+              <textarea rows={2} value={pendingText} onChange={e => setPendingText(e.target.value)}
+                placeholder="Type text, then click canvas…"
+                style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.88rem', resize: 'none', fontFamily, fontWeight, fontStyle, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', boxSizing: 'border-box' }}
+              />
+            </div>
+            {/* Script toggle */}
+            <div style={{ display: 'flex', gap: 5 }}>
+              {(['english', 'arabic'] as const).map(s => (
+                <button key={s} onClick={() => setFontScript(s)}
+                  style={{ flex: 1, padding: '6px', borderRadius: 7, border: '1px solid', borderColor: fontScript === s ? '#6366f1' : '#e5e5e5', background: fontScript === s ? '#ede9fe' : 'transparent', color: fontScript === s ? '#6366f1' : '#555', fontWeight: 600, cursor: 'pointer', fontSize: '0.78rem' }}
+                >{s === 'arabic' ? 'عربي' : 'English'}</button>
+              ))}
+            </div>
+            {/* Font family */}
+            <div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Font</div>
+              <select value={fontFamily} onChange={e => setFontFamily(e.target.value)}
+                style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem', fontFamily }}>
+                {(fontScript === 'arabic' ? ARABIC_FONTS : ENGLISH_FONTS).map(f => (
+                  <option key={f.name} value={f.name}>{f.name}</option>
+                ))}
+              </select>
+            </div>
+            {/* Size + Weight */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Size</div>
+                <input type="number" min={10} max={300} value={fontSize} onChange={e => setFontSize(+e.target.value)}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Weight</div>
+                <select value={fontWeight} onChange={e => setFontWeight(e.target.value)}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
+                  {['300','400','600','bold','700','900'].map(w => <option key={w} value={w}>{w}</option>)}
+                </select>
+              </div>
+            </div>
+            {/* Style + Transform */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Style</div>
+                <select value={fontStyle} onChange={e => setFontStyle(e.target.value as any)}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
+                  <option value="normal">Normal</option>
+                  <option value="italic">Italic</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Case</div>
+                <select value={textTransform} onChange={e => setTextTransform(e.target.value as any)}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
+                  <option value="none">None</option>
+                  <option value="uppercase">UPPER</option>
+                  <option value="lowercase">lower</option>
+                </select>
+              </div>
+            </div>
+            {/* Color + Opacity */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Color</div>
+                <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
+                  style={{ width: '100%', height: 34, borderRadius: 7, border: '1px solid #e5e5e5', cursor: 'pointer', padding: 2 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Opacity {Math.round(textOpacity * 100)}%</div>
+                <input type="range" min={0} max={1} step={0.05} value={textOpacity} onChange={e => setTextOpacity(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
+              </div>
+            </div>
+            {/* Letter spacing */}
+            <div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Letter Spacing — {letterSpacing}px</div>
+              <input type="range" min={-5} max={30} value={letterSpacing} onChange={e => setLetterSpacing(+e.target.value)} style={{ width: '100%' }} />
+            </div>
+            {/* Shadow toggle */}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', color: '#444' }}>
+              <input type="checkbox" checked={shadowEnabled} onChange={e => setShadowEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 14, height: 14 }} />
+              Shadow
+            </label>
+            {shadowEnabled && (
+              <div style={{ paddingLeft: 6, display: 'flex', flexDirection: 'column', gap: 7 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: '#666', marginBottom: 3 }}>Color</div>
+                    <input type="color" value={shadowColor} onChange={e => setShadowColor(e.target.value)} style={{ width: '100%', height: 30, borderRadius: 6, border: '1px solid #e5e5e5', padding: 2 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: '#666', marginBottom: 3 }}>Blur {shadowBlur}px</div>
+                    <input type="range" min={0} max={40} value={shadowBlur} onChange={e => setShadowBlur(+e.target.value)} style={{ width: '100%', marginTop: 7 }} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: '#666', marginBottom: 3 }}>X {shadowOffsetX}px</div>
+                    <input type="range" min={-20} max={20} value={shadowOffsetX} onChange={e => setShadowOffsetX(+e.target.value)} style={{ width: '100%', marginTop: 7 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.7rem', color: '#666', marginBottom: 3 }}>Y {shadowOffsetY}px</div>
+                    <input type="range" min={-20} max={20} value={shadowOffsetY} onChange={e => setShadowOffsetY(+e.target.value)} style={{ width: '100%', marginTop: 7 }} />
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* Stroke toggle */}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', color: '#444' }}>
+              <input type="checkbox" checked={strokeEnabled} onChange={e => setStrokeEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 14, height: 14 }} />
+              Stroke (Outline)
+            </label>
+            {strokeEnabled && (
+              <div style={{ paddingLeft: 6, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+                <div>
+                  <div style={{ fontSize: '0.7rem', color: '#666', marginBottom: 3 }}>Color</div>
+                  <input type="color" value={strokeColor} onChange={e => setStrokeColor(e.target.value)} style={{ width: '100%', height: 30, borderRadius: 6, border: '1px solid #e5e5e5', padding: 2 }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.7rem', color: '#666', marginBottom: 3 }}>Width {strokeWidth}px</div>
+                  <input type="range" min={1} max={10} value={strokeWidth} onChange={e => setStrokeWidth(+e.target.value)} style={{ width: '100%', marginTop: 7 }} />
+                </div>
+              </div>
+            )}
+            {/* Hint */}
+            <div style={{ fontSize: '0.73rem', color: '#aaa', textAlign: 'center', padding: '4px 0', borderTop: '1px dashed #f0f0f0', marginTop: 2 }}>
+              Click on the image to place text
+            </div>
           </div>
         )}
 
@@ -953,173 +1127,6 @@ function StudioContent() {
           )}
           {isErasing && <div style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'not-allowed' }} />}
         </div>
-
-        {/* Full text customization modal */}
-        {showTextModal && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', zIndex: 10 }}>
-            <div style={{ background: '#fff', borderRadius: 16, padding: 0, display: 'flex', flexDirection: 'column', width: 420, maxHeight: '90vh', boxShadow: '0 16px 60px rgba(0,0,0,0.2)', overflow: 'hidden' }}>
-              {/* Header */}
-              <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontWeight: 700, fontSize: '1rem', color: '#111' }}>Add Text</span>
-                <button onClick={() => { setShowTextModal(false); setPendingText(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#888', display: 'flex' }}><X size={18} /></button>
-              </div>
-              {/* Tabs */}
-              <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0', padding: '0 8px' }}>
-                {(['style', 'effects'] as const).map(tab => (
-                  <button key={tab} onClick={() => setTextModalTab(tab)}
-                    style={{ padding: '10px 16px', border: 'none', background: 'none', cursor: 'pointer', fontWeight: textModalTab === tab ? 700 : 400, color: textModalTab === tab ? '#6366f1' : '#888', borderBottom: textModalTab === tab ? '2px solid #6366f1' : '2px solid transparent', fontSize: '0.88rem', textTransform: 'capitalize' }}
-                  >{tab}</button>
-                ))}
-              </div>
-              <div style={{ overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
-                {/* Text input always visible */}
-                <textarea autoFocus rows={2}
-                  style={{ border: '1px solid #e5e5e5', borderRadius: 8, padding: '10px 12px', fontSize: '1rem', fontFamily, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', outline: 'none', color: '#111', resize: 'none', fontWeight, fontStyle }}
-                  placeholder={fontScript === 'arabic' ? 'اكتب النص هنا…' : 'Type your text…'}
-                  value={pendingText}
-                  onChange={e => setPendingText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitText(); } if (e.key === 'Escape') setShowTextModal(false); }}
-                />
-                {/* Live preview */}
-                {pendingText && (
-                  <div style={{ padding: '12px 16px', background: '#111', borderRadius: 8, fontFamily, fontSize: Math.min(fontSize * 0.5, 36), color: textColor, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', fontWeight, fontStyle, opacity: textOpacity, letterSpacing: `${letterSpacing}px`, textTransform: textTransform as any, textShadow: shadowEnabled ? `${shadowOffsetX}px ${shadowOffsetY}px ${shadowBlur}px ${shadowColor}` : 'none', WebkitTextStroke: strokeEnabled ? `${strokeWidth}px ${strokeColor}` : undefined, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-                    {pendingText}
-                  </div>
-                )}
-
-                {textModalTab === 'style' && (<>
-                  {/* Script */}
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {(['english', 'arabic'] as const).map(s => (
-                      <button key={s} onClick={() => setFontScript(s)}
-                        style={{ flex: 1, padding: '7px', borderRadius: 7, border: '1px solid', borderColor: fontScript === s ? '#6366f1' : '#e5e5e5', background: fontScript === s ? '#ede9fe' : 'transparent', color: fontScript === s ? '#6366f1' : '#555', fontWeight: 600, cursor: 'pointer', fontSize: '0.82rem' }}
-                      >{s === 'arabic' ? 'العربية' : 'English'}</button>
-                    ))}
-                  </div>
-                  {/* Font family */}
-                  <div>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#555', marginBottom: 5 }}>Font Family</div>
-                    <select value={fontFamily} onChange={e => setFontFamily(e.target.value)}
-                      style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.88rem', fontFamily: fontFamily }}>
-                      {(fontScript === 'arabic' ? ARABIC_FONTS : ENGLISH_FONTS).map(f => (
-                        <option key={f.name} value={f.name} style={{ fontFamily: f.name }}>{f.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  {/* Size + Weight + Style row */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                    <div>
-                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Size</div>
-                      <input type="number" min={10} max={300} value={fontSize} onChange={e => setFontSize(+e.target.value)}
-                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.88rem' }} />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Weight</div>
-                      <select value={fontWeight} onChange={e => setFontWeight(e.target.value)}
-                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
-                        {['300','400','normal','600','bold','700','900'].map(w => <option key={w} value={w}>{w}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Style</div>
-                      <select value={fontStyle} onChange={e => setFontStyle(e.target.value as any)}
-                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
-                        <option value="normal">Normal</option>
-                        <option value="italic">Italic</option>
-                      </select>
-                    </div>
-                  </div>
-                  {/* Color + Opacity */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    <div>
-                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Color</div>
-                      <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
-                        style={{ width: '100%', height: 36, borderRadius: 7, border: '1px solid #e5e5e5', cursor: 'pointer', padding: 2 }} />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Opacity — {Math.round(textOpacity * 100)}%</div>
-                      <input type="range" min={0} max={1} step={0.05} value={textOpacity} onChange={e => setTextOpacity(+e.target.value)} style={{ width: '100%', marginTop: 10 }} />
-                    </div>
-                  </div>
-                  {/* Letter spacing + Transform */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    <div>
-                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Spacing — {letterSpacing}px</div>
-                      <input type="range" min={-5} max={30} value={letterSpacing} onChange={e => setLetterSpacing(+e.target.value)} style={{ width: '100%', marginTop: 6 }} />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Transform</div>
-                      <select value={textTransform} onChange={e => setTextTransform(e.target.value as any)}
-                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
-                        <option value="none">None</option>
-                        <option value="uppercase">UPPERCASE</option>
-                        <option value="lowercase">lowercase</option>
-                      </select>
-                    </div>
-                  </div>
-                </>)}
-
-                {textModalTab === 'effects' && (<>
-                  {/* Shadow */}
-                  <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={shadowEnabled} onChange={e => setShadowEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 15, height: 15 }} />
-                      Text Shadow
-                    </label>
-                    {shadowEnabled && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                          <div>
-                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Color</div>
-                            <input type="color" value={shadowColor} onChange={e => setShadowColor(e.target.value)} style={{ width: '100%', height: 32, borderRadius: 6, border: '1px solid #e5e5e5', padding: 2 }} />
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Blur — {shadowBlur}px</div>
-                            <input type="range" min={0} max={40} value={shadowBlur} onChange={e => setShadowBlur(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
-                          </div>
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                          <div>
-                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>X — {shadowOffsetX}px</div>
-                            <input type="range" min={-20} max={20} value={shadowOffsetX} onChange={e => setShadowOffsetX(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Y — {shadowOffsetY}px</div>
-                            <input type="range" min={-20} max={20} value={shadowOffsetY} onChange={e => setShadowOffsetY(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  {/* Stroke */}
-                  <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={strokeEnabled} onChange={e => setStrokeEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 15, height: 15 }} />
-                      Text Stroke (Outline)
-                    </label>
-                    {strokeEnabled && (
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                        <div>
-                          <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Color</div>
-                          <input type="color" value={strokeColor} onChange={e => setStrokeColor(e.target.value)} style={{ width: '100%', height: 32, borderRadius: 6, border: '1px solid #e5e5e5', padding: 2 }} />
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Width — {strokeWidth}px</div>
-                          <input type="range" min={1} max={10} value={strokeWidth} onChange={e => setStrokeWidth(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </>)}
-              </div>
-              {/* Footer */}
-              <div style={{ padding: '14px 20px', borderTop: '1px solid #f0f0f0', display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={commitText}><Check size={15} style={{ marginInlineEnd: 6 }} /> Place Text</button>
-                <button className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => { setShowTextModal(false); setPendingText(''); }}><X size={15} style={{ marginInlineEnd: 6 }} /> Cancel</button>
-              </div>
-            </div>
-          </div>
-        )}
 
       </div>
     </div>
