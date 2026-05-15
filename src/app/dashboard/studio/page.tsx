@@ -190,14 +190,25 @@ function StudioContent() {
           ctx.drawImage(imgToDraw, 0, 0);
           setIsLoaded(true);
           setTexts(initialTexts);
-          setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: initialTexts }]);
+          try {
+            setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: initialTexts }]);
+          } catch (e) {
+            console.warn('Canvas tainted when loading cache, undo state might be limited', e);
+          }
           if (isCache) toast.success('Work restored from cache');
         };
 
         if (cachedData) {
           const cachedImg = new window.Image();
+          cachedImg.crossOrigin = 'anonymous'; // Important for proxy and data URLs
           cachedImg.onload = () => finalizeLoad(cachedImg, true);
-          cachedImg.src = cachedData;
+          cachedImg.onerror = () => finalizeLoad(img, false); // Fallback to original if cache fails
+          
+          if (cachedData.startsWith('http')) {
+            cachedImg.src = `/api/studio/proxy-image?url=${encodeURIComponent(cachedData)}`;
+          } else {
+            cachedImg.src = cachedData;
+          }
         } else {
           finalizeLoad(img, false);
         }
@@ -664,7 +675,11 @@ function StudioContent() {
       try { localStorage.setItem(`studio_cache_${mediaUrl}`, resultUrl); } catch (_) {}
     };
     img.onerror = () => toast.error('Failed to apply result image');
-    img.src = resultUrl;
+    if (resultUrl.startsWith('http')) {
+      img.src = `/api/studio/proxy-image?url=${encodeURIComponent(resultUrl)}`;
+    } else {
+      img.src = resultUrl;
+    }
   };
 
   // ── Erase logic (AI – Full Image) ────────────────────────────────
