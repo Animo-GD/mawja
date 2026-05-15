@@ -318,6 +318,54 @@ function StudioContent() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [selectedTextId]);
 
+  // ── Resume pending job on mount (user returned after navigating away) ──────
+  useEffect(() => {
+    if (!mediaUrl || !isLoaded) return;
+    const key = `studio_job_${mediaUrl}`;
+    const pending = localStorage.getItem(key);
+    if (!pending) return;
+    let parsed: { jobId: string; ts: number };
+    try { parsed = JSON.parse(pending); } catch { localStorage.removeItem(key); return; }
+    const { jobId } = parsed;
+    if (!jobId) return;
+
+    setIsErasing(true);
+    toast('AI is still working in the background…', { icon: '⏳' });
+
+    const poll = async () => {
+      const MAX_WAIT_MS = 5 * 60 * 1000;
+      const INTERVAL_MS = 4000;
+      const start = Date.now();
+      while (Date.now() - start < MAX_WAIT_MS) {
+        await new Promise(r => setTimeout(r, INTERVAL_MS));
+        if (!canvasRef.current) return; // navigated away again
+        try {
+          const res = await fetch(`/api/studio/job?jobId=${jobId}`);
+          if (!res.ok) break;
+          const data = await res.json();
+          if (data.status === 'done' && data.result) {
+            localStorage.removeItem(key);
+            applyEraseResult(data.result);
+            toast.success('AI Erase complete! Result applied.');
+            setIsErasing(false);
+            return;
+          }
+          if (data.status === 'failed') {
+            localStorage.removeItem(key);
+            toast.error(data.error || 'Background AI Erase failed');
+            setIsErasing(false);
+            return;
+          }
+        } catch { break; }
+      }
+      localStorage.removeItem(key);
+      toast.error('AI Erase timed out. Please try again.');
+      setIsErasing(false);
+    };
+    poll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, mediaUrl]);
+
   const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
@@ -604,6 +652,29 @@ function StudioContent() {
     }
   };
 
+  // ── Apply result image (shared by direct response + background poll) ────────
+  const applyEraseResult = (resultUrl: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const img = new window.Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const ctx = canvas.getContext('2d')!;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      if (cleanCanvasRef.current) cleanCanvasRef.current.getContext('2d')!.drawImage(canvas, 0, 0);
+      if (maskOverlayRef.current) maskOverlayRef.current.getContext('2d')!.clearRect(0, 0, maskOverlayRef.current.width, maskOverlayRef.current.height);
+      hasMaskRef.current = false;
+      setHasMask(false);
+      setSelection(null);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      setUndoStack(prev => [...prev.slice(-19), { imageData: imgData, texts: prev.length > 0 ? prev[prev.length - 1].texts : [] }]);
+      try { localStorage.setItem(`studio_cache_${mediaUrl}`, resultUrl); } catch (_) {}
+    };
+    img.onerror = () => toast.error('Failed to apply result image');
+    img.src = resultUrl;
+  };
+
   // ── Erase logic (AI – Full Image) ────────────────────────────────
   const handleEraseSelection = async () => {
     const canvas = canvasRef.current;
@@ -618,15 +689,9 @@ function StudioContent() {
     if (tool === 'select' && (!selection || selection.width < 1 || selection.height < 1)) return;
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-
-    // Cancel any previous in-flight request before starting a new one
-    eraseAbortRef.current?.abort();
-    const abortCtrl = new AbortController();
-    eraseAbortRef.current = abortCtrl;
-
     setIsErasing(true);
 
-    // For brush mode: snapshot the CLEAN image (no red overlay) for the undo stack
+    // Snapshot for undo BEFORE sending (works even if user leaves)
     const snapshotCtx = (tool === 'brush' && cleanCanvasRef.current)
       ? cleanCanvasRef.current.getContext('2d', { willReadFrequently: true })!
       : ctx;
@@ -636,27 +701,32 @@ function StudioContent() {
       texts: [...texts],
     }]);
 
-    // Send the CLEAN image for brush mode (no red overlay baked in)
     const fullCanvasBase64 = (tool === 'brush' && cleanCanvasRef.current)
       ? cleanCanvasRef.current.toDataURL('image/png')
       : canvas.toDataURL('image/png');
     const maskBase64 = tool === 'brush' ? getMaskBase64() : null;
 
+    // Generate jobId + persist BEFORE the fetch so navigation won't lose it
+    const jobId = crypto.randomUUID();
+    const jobKey = `studio_job_${mediaUrl}`;
+    localStorage.setItem(jobKey, JSON.stringify({ jobId, ts: Date.now() }));
+
     try {
       let body: Record<string, unknown>;
       if (tool === 'brush') {
-        // Send both mask (precise pixel mask) AND selection (bounding box fallback)
-        // Modal uses whichever it supports — guarantees a result like selection mode
         const bbox = getMaskBoundingBox();
         body = {
           image: fullCanvasBase64,
           mask: maskBase64,
+          jobId,
+          mediaUrl,
           ...(bbox ? { selection: { x: Math.round(bbox.x), y: Math.round(bbox.y), width: Math.round(bbox.width), height: Math.round(bbox.height) } } : {}),
         };
-        console.log('[Brush Erase] Sending mask + bbox:', bbox);
       } else {
         body = {
           image: fullCanvasBase64,
+          jobId,
+          mediaUrl,
           selection: {
             x: Math.round(selection!.x), y: Math.round(selection!.y),
             width: Math.round(selection!.width), height: Math.round(selection!.height),
@@ -664,67 +734,42 @@ function StudioContent() {
         };
       }
 
+      // ⚠️  NO AbortSignal — server ALWAYS completes even if client navigates away
       const response = await fetch('/api/studio/erase', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: abortCtrl.signal,
       });
 
       if (!response.ok) {
         const errBody = await response.json().catch(() => ({}));
+        // ── Insufficient credits ──
+        if (response.status === 402) {
+          localStorage.removeItem(jobKey); // no job was created, don't poll
+          throw new Error(`Not enough credits. You need ${errBody.required ?? '?'} credits but have ${errBody.balance ?? 0}. Please top up.`);
+        }
         throw new Error(errBody.error || `Server error ${response.status}`);
       }
 
       const { result } = await response.json();
       if (!result) throw new Error('No result returned from AI');
 
-      if (!canvasRef.current) return; // user navigated away
-
-      // Apply result to canvas
-      await new Promise<void>((resolve, reject) => {
-        const finalImg = new window.Image();
-        finalImg.onload = () => {
-          const c = canvasRef.current!;
-          const cx = c.getContext('2d')!;
-          cx.clearRect(0, 0, c.width, c.height);
-          cx.drawImage(finalImg, 0, 0, c.width, c.height);
-
-          // Update cleanCanvasRef to the erased result so clearMask() won't revert it
-          if (cleanCanvasRef.current) {
-            cleanCanvasRef.current.getContext('2d')!.drawImage(c, 0, 0);
-          }
-          // Clear the mask overlay without touching the main canvas pixels
-          if (maskOverlayRef.current) {
-            maskOverlayRef.current.getContext('2d')!
-              .clearRect(0, 0, maskOverlayRef.current.width, maskOverlayRef.current.height);
-          }
-          hasMaskRef.current = false;
-          setHasMask(false);
-          setSelection(null);
-          // Save undo entry using prev texts to avoid stale closure
-          const imgData = cx.getImageData(0, 0, c.width, c.height);
-          setUndoStack(prev => [...prev.slice(-19), {
-            imageData: imgData,
-            texts: prev.length > 0 ? prev[prev.length - 1].texts : [],
-          }]);
-          try { localStorage.setItem(`studio_cache_${mediaUrl}`, result); } catch (_) {}
-          resolve();
-        };
-        finalImg.onerror = () => reject(new Error('Failed to load result image'));
-        finalImg.src = result;
-      });
-
-      toast.success('AI Erase applied!');
+      localStorage.removeItem(jobKey);
+      if (canvasRef.current) {
+        applyEraseResult(result);
+        toast.success('AI Erase applied!');
+      }
     } catch (err: any) {
-      if (err.name === 'AbortError') return;
-      if (canvasRef.current) toast.error(err.message || 'AI Erase failed');
+      // If user navigated away while fetch was running, the component may be unmounted.
+      // The job is already persisted in localStorage + Supabase, so it will resume on return.
+      if (canvasRef.current) {
+        toast.error(err.message || 'AI Erase failed');
+        localStorage.removeItem(jobKey);
+      }
     } finally {
-      backgroundTasks.delete(mediaUrl);
-      setIsErasing(false);
+      if (canvasRef.current) setIsErasing(false);
     }
   };
-
 
 
   const updateSelectedText = (updates: Partial<TextObject>) => {

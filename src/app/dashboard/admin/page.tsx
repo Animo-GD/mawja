@@ -176,7 +176,19 @@ export default function AdminUsersPage() {
                 <tbody>
                   {prices.map((item) => (
                     <tr key={item.id}>
-                      <td>{item.service_name}</td>
+                      <td>
+                        <span style={{ fontWeight: 500 }}>
+                          {({
+                            generate_text: 'Generate Text',
+                            generate_image: 'Generate Image',
+                            generate_full_post: 'Generate Full Post',
+                            generate_video: 'Generate Video',
+                            idea_generation: 'Idea Generation',
+                            studio_erase: '🖌️ Studio AI Erase',
+                          } as Record<string, string>)[item.service_name] ?? item.service_name}
+                        </span>
+                        <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>{item.service_name}</span>
+                      </td>
                       <td>
                         <input
                           type="number"
