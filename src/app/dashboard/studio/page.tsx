@@ -169,22 +169,38 @@ function StudioContent() {
     if (!canvas) return;
 
     const proxyUrl = `/api/studio/proxy-image?url=${encodeURIComponent(mediaUrl)}`;
-    const loadImg = (src: string) => {
+    const loadImg = async (src: string) => {
+      // 1. Fetch cloud draft first
+      let draftData = null;
+      try {
+        const res = await fetch(`/api/studio/draft?media_url=${encodeURIComponent(mediaUrl)}`);
+        if (res.ok) {
+          const { draft } = await res.json();
+          if (draft) draftData = draft;
+        }
+      } catch (e) { console.warn('Failed to fetch draft', e); }
+
       const img = new window.Image();
       // No crossOrigin needed for same-origin proxy — prevents canvas tainting
       img.onload = () => {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+        
         // ── Load cached image & texts ──
-        const cacheKey = `studio_cache_${mediaUrl}`;
-        const cachedData = localStorage.getItem(cacheKey);
-        const textKey = `studio_texts_${mediaUrl}`;
-        let initialTexts: TextObject[] = [];
-        try {
-          const storedTexts = localStorage.getItem(textKey);
-          if (storedTexts) initialTexts = JSON.parse(storedTexts);
-        } catch (e) {}
+        let cachedData = draftData ? draftData.draft_image_url : null;
+        let initialTexts: TextObject[] = draftData ? draftData.texts : [];
+        
+        // Fallback to localStorage if no draft
+        if (!draftData) {
+          try {
+            const cacheKey = `studio_cache_${mediaUrl}`;
+            cachedData = localStorage.getItem(cacheKey);
+            const textKey = `studio_texts_${mediaUrl}`;
+            const storedTexts = localStorage.getItem(textKey);
+            if (storedTexts) initialTexts = JSON.parse(storedTexts);
+          } catch (e) {}
+        }
 
         const finalizeLoad = (imgToDraw: HTMLImageElement, isCache: boolean) => {
           ctx.drawImage(imgToDraw, 0, 0);
@@ -195,7 +211,7 @@ function StudioContent() {
           } catch (e) {
             console.warn('Canvas tainted when loading cache, undo state might be limited', e);
           }
-          if (isCache) toast.success('Work restored from cache');
+          if (isCache) toast.success(draftData ? 'Draft loaded securely from cloud! ☁️' : 'Work restored from local cache');
         };
 
         if (cachedData) {
@@ -237,10 +253,15 @@ function StudioContent() {
     }
   }, [mediaUrl, texts]);
 
-  const resetToOriginal = () => {
+  const resetToOriginal = async () => {
     if (!confirm('Discard all changes and reset to original?')) return;
     localStorage.removeItem(`studio_cache_${mediaUrl}`);
     localStorage.removeItem(`studio_texts_${mediaUrl}`);
+    try {
+      await fetch(`/api/studio/draft?media_url=${encodeURIComponent(mediaUrl)}`, { method: 'DELETE' });
+    } catch (e) {
+      console.warn('Failed to delete cloud draft', e);
+    }
     window.location.reload();
   };
 
@@ -790,6 +811,9 @@ function StudioContent() {
     setSelectedTextId(null);
   };
 
+  const [isSaving, setIsSaving] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+
   // ── Save to Gallery ──────────────────────────────────────────────
   const handleSave = async () => {
     const canvas = canvasRef.current;
@@ -839,11 +863,39 @@ function StudioContent() {
           const { error } = await res.json();
           throw new Error(error || `Upload failed (${res.status})`);
         }
-        toast.success('Saved to Gallery! ✓', { duration: 3000 });
+        toast.success(t('toast_gallery_saved'), { duration: 3000 });
       } catch (err: any) {
-        toast.error(err.message || 'Failed to save to gallery');
+        toast.error(t('toast_gallery_failed'));
       } finally {
         setIsSaving(false);
+      }
+    }, 'image/png');
+  };
+
+  // ── Save as Draft ────────────────────────────────────────────────
+  const handleSaveDraft = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !isLoaded || !mediaUrl) return;
+    setIsSavingDraft(true);
+
+    canvas.toBlob(async (blob) => {
+      if (!blob) { toast.error('Export failed'); setIsSavingDraft(false); return; }
+      try {
+        const formData = new FormData();
+        formData.append('file', blob);
+        formData.append('media_url', mediaUrl);
+        formData.append('texts', JSON.stringify(texts));
+        
+        const res = await fetch('/api/studio/draft', { method: 'POST', body: formData });
+        if (!res.ok) {
+          const { error } = await res.json();
+          throw new Error(error || `Draft save failed (${res.status})`);
+        }
+        toast.success(t('toast_draft_saved'), { duration: 3000 });
+      } catch (err: any) {
+        toast.error(t('toast_draft_failed'));
+      } finally {
+        setIsSavingDraft(false);
       }
     }, 'image/png');
   };
@@ -870,9 +922,9 @@ function StudioContent() {
         {/* Tools */}
         <div style={{ padding: '12px 8px', borderBottom: '1px solid #f0f0f0' }}>
           {([
-            { id: 'select' as Tool, icon: <Eraser size={16} />, label: 'Erase by Selection' },
-            { id: 'brush' as Tool, icon: <Paintbrush size={16} />, label: 'Brush Erase' },
-            { id: 'text'   as Tool, icon: <Type size={16} />,   label: 'Text' },
+            { id: 'select' as Tool, icon: <Eraser size={16} />, label: t('studio_tool_select') },
+            { id: 'brush' as Tool, icon: <Paintbrush size={16} />, label: t('studio_tool_brush') },
+            { id: 'text'   as Tool, icon: <Type size={16} />,   label: t('studio_add_text') },
           ]).map(({ id, icon, label }) => (
             <button
               key={id}
@@ -894,19 +946,19 @@ function StudioContent() {
         {/* Brush panel — in sidebar, not floating on canvas */}
         {tool === 'brush' && isLoaded && (
           <div style={{ padding: '12px 10px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#555', paddingLeft: 4 }}>Brush Size — {brushSize}px</div>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#555', paddingLeft: 4 }}>{t('studio_brush_size')} — {brushSize}px</div>
             <input type="range" min={10} max={150} value={brushSize} onChange={e => setBrushSize(+e.target.value)} style={{ width: '100%' }} />
             <button
               onClick={handleEraseSelection}
               disabled={!hasMask || isErasing}
               style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 14px', borderRadius: 8, border: 'none', background: hasMask && !isErasing ? '#ef4444' : '#ccc', color: '#fff', cursor: hasMask && !isErasing ? 'pointer' : 'not-allowed', fontSize: '0.87rem', fontWeight: 600 }}
             >
-              {isErasing ? <><Loader2 size={14} className="spin" /> Working…</> : <><Eraser size={14} /> AI Erase</>}
+              {isErasing ? <><Loader2 size={14} className="spin" /> {t('studio_erasing')}</> : <><Eraser size={14} /> {t('studio_erase_selection')}</>}
             </button>
             {hasMask && !isErasing && (
-              <button onClick={clearMask} style={{ width: '100%', background: 'transparent', border: '1px solid #ddd', borderRadius: 8, padding: '7px 12px', fontSize: '0.82rem', cursor: 'pointer', color: '#666' }}>Clear Mask</button>
+              <button onClick={clearMask} style={{ width: '100%', background: 'transparent', border: '1px solid #ddd', borderRadius: 8, padding: '7px 12px', fontSize: '0.82rem', cursor: 'pointer', color: '#666' }}>{t('studio_reset')}</button>
             )}
-            {isErasing && <div style={{ fontSize: '0.75rem', color: '#888', textAlign: 'center' }}>AI is working…</div>}
+            {isErasing && <div style={{ fontSize: '0.75rem', color: '#888', textAlign: 'center' }}>{t('studio_erasing')}</div>}
           </div>
         )}
 
@@ -916,7 +968,7 @@ function StudioContent() {
             <div style={{ fontSize: '0.75rem', color: '#999', paddingLeft: 4 }}>{Math.round(selection.width)} × {Math.round(selection.height)}px</div>
             <button onClick={handleEraseSelection} disabled={isErasing}
               style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 14px', borderRadius: 8, border: 'none', background: isErasing ? '#ccc' : '#ef4444', color: '#fff', cursor: isErasing ? 'not-allowed' : 'pointer', fontSize: '0.87rem', fontWeight: 600 }}
-            >{isErasing ? <><Loader2 size={14} className="spin" /> Working…</> : <><Eraser size={14} /> AI Erase</>}</button>
+            >{isErasing ? <><Loader2 size={14} className="spin" /> {t('studio_erasing')}</> : <><Eraser size={14} /> {t('studio_erase_selection')}</>}</button>
             <button onClick={() => setSelection(null)}
               style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.82rem', color: '#999' }}
             ><X size={12} /> Clear</button>
@@ -928,9 +980,9 @@ function StudioContent() {
           <div style={{ padding: '12px 10px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 11, overflowY: 'auto' }}>
             {/* Text input */}
             <div>
-              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Text Content</div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>{t('studio_add_text')}</div>
               <textarea rows={2} value={pendingText} onChange={e => setPendingText(e.target.value)}
-                placeholder="Type text, then click canvas…"
+                placeholder={t('studio_text_placeholder')}
                 style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.88rem', resize: 'none', fontFamily, fontWeight, fontStyle, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', boxSizing: 'border-box' }}
               />
             </div>
@@ -944,7 +996,7 @@ function StudioContent() {
             </div>
             {/* Font family */}
             <div>
-              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Font</div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>{t('studio_font')}</div>
               <select value={fontFamily} onChange={e => setFontFamily(e.target.value)}
                 style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem', fontFamily }}>
                 {(fontScript === 'arabic' ? ARABIC_FONTS : ENGLISH_FONTS).map(f => (
@@ -955,7 +1007,7 @@ function StudioContent() {
             {/* Size + Weight */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
               <div>
-                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Size</div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>{t('studio_text_size')}</div>
                 <input type="number" min={10} max={300} value={fontSize} onChange={e => setFontSize(+e.target.value)}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.85rem', boxSizing: 'border-box' }} />
               </div>
@@ -990,7 +1042,7 @@ function StudioContent() {
             {/* Color + Opacity */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
               <div>
-                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Color</div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>{t('studio_color')}</div>
                 <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
                   style={{ width: '100%', height: 34, borderRadius: 7, border: '1px solid #e5e5e5', cursor: 'pointer', padding: 2 }} />
               </div>
@@ -1001,13 +1053,13 @@ function StudioContent() {
             </div>
             {/* Letter spacing */}
             <div>
-              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Letter Spacing — {letterSpacing}px</div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>{t('studio_letter_spacing')} — {letterSpacing}px</div>
               <input type="range" min={-5} max={30} value={letterSpacing} onChange={e => setLetterSpacing(+e.target.value)} style={{ width: '100%' }} />
             </div>
             {/* Shadow toggle */}
             <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', color: '#444' }}>
               <input type="checkbox" checked={shadowEnabled} onChange={e => setShadowEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 14, height: 14 }} />
-              Shadow
+              {t('studio_shadow')}
             </label>
             {shadowEnabled && (
               <div style={{ paddingLeft: 6, display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -1036,7 +1088,7 @@ function StudioContent() {
             {/* Stroke toggle */}
             <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', color: '#444' }}>
               <input type="checkbox" checked={strokeEnabled} onChange={e => setStrokeEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 14, height: 14 }} />
-              Stroke (Outline)
+              {t('studio_stroke')}
             </label>
             {strokeEnabled && (
               <div style={{ paddingLeft: 6, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
@@ -1052,7 +1104,7 @@ function StudioContent() {
             )}
             {/* Hint */}
             <div style={{ fontSize: '0.73rem', color: '#aaa', textAlign: 'center', padding: '4px 0', borderTop: '1px dashed #f0f0f0', marginTop: 2 }}>
-              Click on the image to place text
+              {t('studio_hint_click')}
             </div>
           </div>
         )}
@@ -1060,19 +1112,22 @@ function StudioContent() {
         {/* Undo / Reset */}
         <div style={{ padding: '8px', borderBottom: '1px solid #f0f0f0' }}>
           <button onClick={undo} disabled={undoStack.length <= 1} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.87rem', color: '#444', opacity: undoStack.length <= 1 ? 0.4 : 1 }}>
-            <Undo2 size={15} /> Undo
+            <Undo2 size={15} /> {t('studio_undo')}
           </button>
           <button onClick={resetToOriginal} disabled={!isLoaded} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.87rem', color: '#444' }}>
-            <RotateCcw size={15} /> Reset
+            <RotateCcw size={15} /> {t('studio_reset')}
           </button>
         </div>
 
         <div style={{ flex: 1 }} />
 
         {/* Save */}
-        <div style={{ padding: 12, borderTop: '1px solid #f0f0f0' }}>
+        <div style={{ padding: 12, borderTop: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button className="btn btn-secondary" onClick={handleSaveDraft} disabled={isSavingDraft || !isLoaded} style={{ width: '100%', justifyContent: 'center', borderRadius: 8, fontWeight: 600, border: '1px solid #e5e5e5', background: '#fff' }}>
+            {isSavingDraft ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 7 }} />{t('studio_saving')}</> : <><Save size={14} style={{ marginInlineEnd: 7 }} />{t('studio_save_draft')}</>}
+          </button>
           <button className="btn btn-primary" onClick={handleSave} disabled={isSaving || !isLoaded} style={{ width: '100%', justifyContent: 'center', borderRadius: 8, fontWeight: 600 }}>
-            {isSaving ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 7 }} />Saving…</> : <><Save size={14} style={{ marginInlineEnd: 7 }} />Save to Gallery</>}
+            {isSaving ? <><Loader2 size={14} className="spin" style={{ marginInlineEnd: 7 }} />{t('studio_exporting')}</> : <><Save size={14} style={{ marginInlineEnd: 7 }} />{t('studio_export_gallery')}</>}
           </button>
         </div>
       </div>

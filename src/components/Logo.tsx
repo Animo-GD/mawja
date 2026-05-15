@@ -1,8 +1,11 @@
 'use client';
 
 import React from 'react';
+import { useLang } from '@/lib/LanguageContext';
 
 export default function Logo({ size = 32, fontSize = '1.5rem', className = '' }: { size?: number, fontSize?: string, className?: string }) {
+  const { lang } = useLang();
+
   return (
     <div className={`logo-container ${className}`} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
       {/* Icon: Wave */}
@@ -36,17 +39,21 @@ export default function Logo({ size = 32, fontSize = '1.5rem', className = '' }:
         </svg>
       </div>
 
-      {/* Text Part: Mawja */}
+      {/* Text Part: Mawja / موجه */}
       <div style={{ 
         fontSize: fontSize, 
         fontWeight: 800, 
-        fontFamily: "'Inter', system-ui, sans-serif", 
-        letterSpacing: '-0.03em',
+        fontFamily: lang === 'ar' ? "'Cairo', 'Tajawal', sans-serif" : "'Inter', system-ui, sans-serif", 
+        letterSpacing: lang === 'ar' ? '0' : '-0.03em',
         color: '#1e293b',
         lineHeight: 1,
         whiteSpace: 'nowrap'
       }}>
-        Maw<span style={{ color: '#4f46e5' }}>ja</span>
+        {lang === 'ar' ? (
+          <>موجـ<span style={{ color: '#4f46e5' }}>ـه</span></>
+        ) : (
+          <>Maw<span style={{ color: '#4f46e5' }}>ja</span></>
+        )}
       </div>
     </div>
   );
