@@ -492,8 +492,10 @@ function StudioContent() {
     saveSnapshot();
     setIsErasing(true);
 
-    // Send the full canvas image to the AI
-    const fullCanvasBase64 = canvas.toDataURL('image/png');
+    // For brush mode: send the CLEAN image (without red overlay), not the canvas which has the overlay baked in
+    const fullCanvasBase64 = (tool === 'brush' && cleanCanvasRef.current)
+      ? cleanCanvasRef.current.toDataURL('image/png')
+      : canvas.toDataURL('image/png');
     const maskBase64 = tool === 'brush' ? getMaskBase64() : null;
 
     const processTask = async () => {
@@ -538,9 +540,15 @@ function StudioContent() {
         finalImg.onload = () => {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(finalImg, 0, 0, canvas.width, canvas.height);
+          // Update cleanCanvasRef to the NEW erased state so clearMask() doesn't revert it
+          if (cleanCanvasRef.current) {
+            cleanCanvasRef.current.getContext('2d')!.drawImage(canvas, 0, 0);
+          }
+          // Clear strokes without restoring old canvas
+          maskStrokesRef.current = [];
+          setHasMask(false);
           setUndoStack(prev => [...prev.slice(-19), { imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: texts }]);
           setSelection(null);
-          clearMask();           // ← clear the red brush mask overlay
           setIsErasing(false);
           toast.success('AI Erase applied!');
         };
