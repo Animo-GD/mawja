@@ -76,10 +76,16 @@ function StudioContent() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  // Offscreen canvas holding the clean image before brush strokes
+  // Offscreen canvas holding the clean image before any brush strokes
   const cleanCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  // Brush strokes stored in canvas-space coordinates (no CSS scaling)
-  const maskStrokesRef = useRef<{ x: number; y: number; radius: number }[]>([]);
+  // Offscreen mask canvas — accumulates strokes so renderMaskOverlay never loops all strokes
+  const maskOverlayRef = useRef<HTMLCanvasElement | null>(null);
+  // Tracks whether any strokes have been made (avoids expensive state update on every move)
+  const hasMaskRef = useRef(false);
+  // AbortController ref to cancel in-flight erase requests on unmount/navigation
+  const eraseAbortRef = useRef<AbortController | null>(null);
+  // Last brush point for lineTo continuous stroke
+  const lastBrushPointRef = useRef<{ x: number; y: number } | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -231,9 +237,13 @@ function StudioContent() {
     ctx.putImageData(lastState.imageData, 0, 0);
     setTexts(lastState.texts);
     // Clear any brush mask so it doesn't linger after undo
-    maskStrokesRef.current = [];
+    if (maskOverlayRef.current) {
+      maskOverlayRef.current.getContext('2d')!
+        .clearRect(0, 0, maskOverlayRef.current.width, maskOverlayRef.current.height);
+    }
+    hasMaskRef.current = false;
     setHasMask(false);
-    // Update the clean reference so brush mode starts fresh
+    // Update the clean reference so brush mode starts fresh from the undone state
     if (cleanCanvasRef.current) {
       cleanCanvasRef.current.getContext('2d')!.drawImage(canvas, 0, 0);
     }
@@ -242,20 +252,31 @@ function StudioContent() {
     } catch (e) {}
   }, [undoStack, mediaUrl]);
 
-  // ── Capture clean canvas snapshot whenever brush mode is activated ──
+  // ── Capture clean canvas snapshot + init mask overlay when entering brush mode ──
   useEffect(() => {
     if (tool === 'brush' && isLoaded) {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      maskStrokesRef.current = [];
+      hasMaskRef.current = false;
       setHasMask(false);
-      const offscreen = document.createElement('canvas');
-      offscreen.width = canvas.width;
-      offscreen.height = canvas.height;
-      offscreen.getContext('2d')!.drawImage(canvas, 0, 0);
-      cleanCanvasRef.current = offscreen;
+      // Snapshot the current canvas as the clean (pre-brush) state
+      const clean = document.createElement('canvas');
+      clean.width = canvas.width;
+      clean.height = canvas.height;
+      clean.getContext('2d')!.drawImage(canvas, 0, 0);
+      cleanCanvasRef.current = clean;
+      // Create an empty offscreen mask overlay canvas
+      const overlay = document.createElement('canvas');
+      overlay.width = canvas.width;
+      overlay.height = canvas.height;
+      maskOverlayRef.current = overlay;
     }
   }, [tool, isLoaded]);
+
+  // ── Cleanup: cancel any in-flight erase request on unmount ──
+  useEffect(() => {
+    return () => { eraseAbortRef.current?.abort(); };
+  }, []);
 
   const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current!;
@@ -296,46 +317,72 @@ function StudioContent() {
   };
 
   // ── Brush painting — draws directly on the main canvas ──────────────
-  // All coordinates stored in canvas-space (canvas.width x canvas.height) — zero CSS scaling issues.
+  // Uses an offscreen maskOverlayRef to accumulate strokes efficiently.
+  // renderMaskOverlay: O(1) — always just 2 drawImage calls regardless of stroke count.
 
   const renderMaskOverlay = () => {
     const canvas = canvasRef.current;
     const clean = cleanCanvasRef.current;
-    if (!canvas || !clean) return;
+    const overlay = maskOverlayRef.current;
+    if (!canvas || !clean || !overlay) return;
     const ctx = canvas.getContext('2d')!;
-    // 1. Restore the pre-brush clean state
+    // Restore the pre-brush clean image
     ctx.drawImage(clean, 0, 0);
-    // 2. Paint all accumulated strokes as a translucent red tint
+    // Composite the mask overlay at reduced opacity
     ctx.save();
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.28)';
-    for (const s of maskStrokesRef.current) {
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.globalAlpha = 0.35;
+    ctx.drawImage(overlay, 0, 0);
     ctx.restore();
   };
 
   const paintMask = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const overlay = maskOverlayRef.current;
+    if (!canvas || !overlay) return;
     const rect = canvas.getBoundingClientRect();
-    // scaleX converts CSS display pixels → canvas internal pixels
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const x = (clientX - rect.left) * scaleX;
     const y = (clientY - rect.top) * scaleY;
-    // Brush radius in canvas pixels: (brushSize/2 display px) * scaleX = correct canvas px
-    const radius = (brushSize / 2) * scaleX;
-    maskStrokesRef.current = [...maskStrokesRef.current, { x, y, radius }];
-    setHasMask(true);
+    const diameter = brushSize * scaleX; // lineWidth = full brush diameter
+
+    const octx = overlay.getContext('2d')!;
+    octx.lineWidth = diameter;
+    octx.lineCap = 'round';
+    octx.lineJoin = 'round';
+    octx.strokeStyle = 'rgb(239, 68, 68)';
+    octx.fillStyle = 'rgb(239, 68, 68)';
+
+    const last = lastBrushPointRef.current;
+    if (last) {
+      // Connect to previous point → smooth continuous stroke
+      octx.beginPath();
+      octx.moveTo(last.x, last.y);
+      octx.lineTo(x, y);
+      octx.stroke();
+    } else {
+      // First point of a new stroke — draw a filled circle
+      octx.beginPath();
+      octx.arc(x, y, diameter / 2, 0, Math.PI * 2);
+      octx.fill();
+    }
+    lastBrushPointRef.current = { x, y };
     renderMaskOverlay();
+    if (!hasMaskRef.current) {
+      hasMaskRef.current = true;
+      setHasMask(true);
+    }
   };
 
   const clearMask = () => {
-    maskStrokesRef.current = [];
+    // Clear the offscreen overlay
+    const overlay = maskOverlayRef.current;
+    if (overlay) {
+      overlay.getContext('2d')!.clearRect(0, 0, overlay.width, overlay.height);
+    }
+    hasMaskRef.current = false;
     setHasMask(false);
-    // Restore clean image (remove the painted overlay)
+    // Restore clean image to main canvas
     const canvas = canvasRef.current;
     const clean = cleanCanvasRef.current;
     if (canvas && clean) {
@@ -344,22 +391,29 @@ function StudioContent() {
   };
 
   const getMaskBase64 = (): string | null => {
+    const overlay = maskOverlayRef.current;
+    if (!overlay || !hasMaskRef.current) return null;
     const canvas = canvasRef.current;
-    if (!canvas || maskStrokesRef.current.length === 0) return null;
-    // Create a black background with white circles where strokes were
-    const bw = document.createElement('canvas');
-    bw.width = canvas.width;
-    bw.height = canvas.height;
-    const ctx = bw.getContext('2d')!;
-    ctx.fillStyle = 'black';
-    ctx.fillRect(0, 0, bw.width, bw.height);
-    ctx.fillStyle = 'white';
-    for (const s of maskStrokesRef.current) {
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    return bw.toDataURL('image/png');
+    if (!canvas) return null;
+    // Build B&W mask: white where painted, black elsewhere
+    const mask = document.createElement('canvas');
+    mask.width = canvas.width;
+    mask.height = canvas.height;
+    const mctx = mask.getContext('2d')!;
+    // Step 1: black background
+    mctx.fillStyle = 'black';
+    mctx.fillRect(0, 0, mask.width, mask.height);
+    // Step 2: white where the overlay has painted pixels
+    const helper = document.createElement('canvas');
+    helper.width = canvas.width;
+    helper.height = canvas.height;
+    const hctx = helper.getContext('2d')!;
+    hctx.fillStyle = 'white';
+    hctx.fillRect(0, 0, helper.width, helper.height);
+    hctx.globalCompositeOperation = 'destination-in'; // keep only where overlay is opaque
+    hctx.drawImage(overlay, 0, 0);
+    mctx.drawImage(helper, 0, 0);
+    return mask.toDataURL('image/png');
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLElement>) => {
@@ -394,6 +448,7 @@ function StudioContent() {
   };
 
   const onMouseUp = () => {
+    lastBrushPointRef.current = null; // end of brush stroke
     setIsSelecting(false);
     setIsDrawingMask(false);
     setDraggingId(null);
@@ -480,87 +535,107 @@ function StudioContent() {
   // ── Erase logic (AI – Full Image) ────────────────────────────────
   const handleEraseSelection = async () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || isErasing) return;
 
-    // Brush mode: need a painted mask
-    if (tool === 'brush' && !hasMask) return;
+    // Brush mode: need a painted mask AND a valid clean canvas
+    if (tool === 'brush') {
+      if (!hasMaskRef.current) return;
+      if (!cleanCanvasRef.current) { toast.error('Canvas not ready, please try again'); return; }
+    }
     // Select mode: need a drawn rectangle
     if (tool === 'select' && (!selection || selection.width < 1 || selection.height < 1)) return;
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-    
-    saveSnapshot();
+
+    // Cancel any previous in-flight request before starting a new one
+    eraseAbortRef.current?.abort();
+    const abortCtrl = new AbortController();
+    eraseAbortRef.current = abortCtrl;
+
     setIsErasing(true);
 
-    // For brush mode: send the CLEAN image (without red overlay), not the canvas which has the overlay baked in
+    // For brush mode: snapshot the CLEAN image (no red overlay) for the undo stack
+    const snapshotCtx = (tool === 'brush' && cleanCanvasRef.current)
+      ? cleanCanvasRef.current.getContext('2d', { willReadFrequently: true })!
+      : ctx;
+    const snapshotCanvas = (tool === 'brush' && cleanCanvasRef.current) || canvas;
+    setUndoStack(prev => [...prev.slice(-19), {
+      imageData: snapshotCtx.getImageData(0, 0, snapshotCanvas.width, snapshotCanvas.height),
+      texts: [...texts],
+    }]);
+
+    // Send the CLEAN image for brush mode (no red overlay baked in)
     const fullCanvasBase64 = (tool === 'brush' && cleanCanvasRef.current)
       ? cleanCanvasRef.current.toDataURL('image/png')
       : canvas.toDataURL('image/png');
     const maskBase64 = tool === 'brush' ? getMaskBase64() : null;
 
-    const processTask = async () => {
-      try {
-        const body = maskBase64
-          ? { image: fullCanvasBase64, mask: maskBase64 }
-          : { image: fullCanvasBase64, selection: { x: Math.round(selection!.x), y: Math.round(selection!.y), width: Math.round(selection!.width), height: Math.round(selection!.height) } };
-
-        const response = await fetch('/api/studio/erase', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-
-        if (!response.ok) {
-          const err = await response.json();
-          throw new Error(err.error || 'AI request failed');
-        }
-
-        const { result } = await response.json();
-
-        // Cache the result
-        try {
-          localStorage.setItem(`studio_cache_${mediaUrl}`, result);
-        } catch (e) {}
-
-        return result;
-      } catch (err) {
-
-        throw err;
-      }
-    };
-
-    const task = processTask();
-    backgroundTasks.set(mediaUrl, task);
-
     try {
-      const finalBase64 = await task;
-      
-      if (canvasRef.current) {
+      const body = maskBase64
+        ? { image: fullCanvasBase64, mask: maskBase64 }
+        : {
+            image: fullCanvasBase64,
+            selection: {
+              x: Math.round(selection!.x), y: Math.round(selection!.y),
+              width: Math.round(selection!.width), height: Math.round(selection!.height),
+            },
+          };
+
+      const response = await fetch('/api/studio/erase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: abortCtrl.signal,
+      });
+
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.error || `Server error ${response.status}`);
+      }
+
+      const { result } = await response.json();
+      if (!result) throw new Error('No result returned from AI');
+
+      if (!canvasRef.current) return; // user navigated away
+
+      // Apply result to canvas
+      await new Promise<void>((resolve, reject) => {
         const finalImg = new window.Image();
         finalImg.onload = () => {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(finalImg, 0, 0, canvas.width, canvas.height);
-          // Update cleanCanvasRef to the NEW erased state so clearMask() doesn't revert it
+          const c = canvasRef.current!;
+          const cx = c.getContext('2d')!;
+          cx.clearRect(0, 0, c.width, c.height);
+          cx.drawImage(finalImg, 0, 0, c.width, c.height);
+
+          // Update cleanCanvasRef to the erased result so clearMask() won't revert it
           if (cleanCanvasRef.current) {
-            cleanCanvasRef.current.getContext('2d')!.drawImage(canvas, 0, 0);
+            cleanCanvasRef.current.getContext('2d')!.drawImage(c, 0, 0);
           }
-          // Clear strokes without restoring old canvas
-          maskStrokesRef.current = [];
+          // Clear the mask overlay without touching the main canvas pixels
+          if (maskOverlayRef.current) {
+            maskOverlayRef.current.getContext('2d')!
+              .clearRect(0, 0, maskOverlayRef.current.width, maskOverlayRef.current.height);
+          }
+          hasMaskRef.current = false;
           setHasMask(false);
-          setUndoStack(prev => [...prev.slice(-19), { imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: texts }]);
           setSelection(null);
-          setIsErasing(false);
-          toast.success('AI Erase applied!');
+          // Save undo entry using prev texts to avoid stale closure
+          const imgData = cx.getImageData(0, 0, c.width, c.height);
+          setUndoStack(prev => [...prev.slice(-19), {
+            imageData: imgData,
+            texts: prev.length > 0 ? prev[prev.length - 1].texts : [],
+          }]);
+          try { localStorage.setItem(`studio_cache_${mediaUrl}`, result); } catch (_) {}
+          resolve();
         };
-        finalImg.onerror = () => setIsErasing(false);
-        finalImg.src = finalBase64;
-      } else {
-        toast.success('Background task finished successfully!');
-        setIsErasing(false);
-      }
+        finalImg.onerror = () => reject(new Error('Failed to load result image'));
+        finalImg.src = result;
+      });
+
+      toast.success('AI Erase applied!');
     } catch (err: any) {
+      if (err.name === 'AbortError') return;
       if (canvasRef.current) toast.error(err.message || 'AI Erase failed');
-      setIsErasing(false);
     } finally {
       backgroundTasks.delete(mediaUrl);
       setIsErasing(false);
@@ -602,22 +677,17 @@ function StudioContent() {
     setSelectedTextId(null);
   };
 
-  // ── Save ──────────────────────────────────────────────────────────
+  // ── Download (save directly to device) ──────────────────────────
   const handleSave = () => {
     const canvas = canvasRef.current;
     if (!canvas || !isLoaded) return;
     setIsSaving(true);
-
-    // Create a temporary canvas to merge image and text
+    // Composite image + text overlays
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = canvas.width;
     tempCanvas.height = canvas.height;
     const tctx = tempCanvas.getContext('2d')!;
-    
-    // 1. Draw base image
     tctx.drawImage(canvas, 0, 0);
-
-    // 2. Draw all text objects
     texts.forEach(t => {
       tctx.font = `bold ${t.fontSize}px "${t.fontFamily}", sans-serif`;
       tctx.fillStyle = t.color;
@@ -629,22 +699,16 @@ function StudioContent() {
         tctx.fillText(t.text, t.x, t.y);
       }
     });
-
-    tempCanvas.toBlob(async (blob) => {
+    tempCanvas.toBlob((blob) => {
       if (!blob) { toast.error('Export failed'); setIsSaving(false); return; }
-      try {
-        const fd = new FormData();
-        fd.append('file', blob, 'studio-edit.png');
-        const res = await fetch('/api/studio/save-image', { method: 'POST', body: fd });
-        if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
-        localStorage.removeItem(`studio_cache_${mediaUrl}`);
-        toast.success('Saved to gallery!');
-        router.push('/dashboard/gallery');
-      } catch (err: any) {
-        toast.error(err.message || 'Save failed');
-      } finally {
-        setIsSaving(false);
-      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `mawja-studio-${Date.now()}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Image downloaded!');
+      setIsSaving(false);
     }, 'image/png');
   };
 

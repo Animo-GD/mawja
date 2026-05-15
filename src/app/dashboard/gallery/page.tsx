@@ -1,10 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useLang } from '@/lib/LanguageContext';
-import { Image as ImageIcon, Sparkles, Trash2, Edit3, Loader2 } from 'lucide-react';
+import { Image as ImageIcon, Sparkles, Trash2, Edit3, Loader2, X, ZoomIn } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'react-hot-toast';
 
@@ -27,6 +27,7 @@ export default function GalleryPage() {
   const isAr = lang === 'ar';
   const qc = useQueryClient();
   const [tab, setTab] = useState<'ai' | 'studio'>('ai');
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   const { data: posts, isLoading: postsLoading } = useQuery({
     queryKey: ['posts'],
@@ -37,6 +38,13 @@ export default function GalleryPage() {
     queryKey: ['gallery'],
     queryFn: fetchGallery,
   });
+
+  // Close lightbox on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightboxUrl(null); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const mediaItems = posts?.filter(p => p.image_url || p.video_url) ?? [];
 
@@ -132,12 +140,24 @@ export default function GalleryPage() {
                   onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-4px)'; (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-hover)'; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(0)'; (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-card)'; }}
                 >
-                  <div style={{ position: 'relative', paddingTop: '100%', background: 'var(--color-bg-dark)', overflow: 'hidden' }}>
+                  <div
+                    style={{ position: 'relative', paddingTop: '100%', background: 'var(--color-bg-dark)', overflow: 'hidden', cursor: item.image_url ? 'zoom-in' : 'default' }}
+                    onClick={() => item.image_url && setLightboxUrl(item.image_url)}
+                  >
                     {item.image_url && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={item.image_url} alt="Generated"
-                        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.3s ease' }}
+                        onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.04)')}
+                        onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+                      />
                     )}
+                    <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(0,0,0,0.5)', color: '#fff', borderRadius: '50%', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 0.2s' }}
+                      onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+                      onMouseLeave={e => (e.currentTarget.style.opacity = '0')}
+                    >
+                      <ZoomIn size={15} />
+                    </div>
                   </div>
                   <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--color-text-secondary)', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', display: '-webkit-box', overflow: 'hidden' }}>
@@ -176,10 +196,16 @@ export default function GalleryPage() {
                   onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-4px)'; (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-hover)'; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(0)'; (e.currentTarget as HTMLDivElement).style.boxShadow = 'var(--shadow-card)'; }}
                 >
-                  <div style={{ position: 'relative', paddingTop: '100%', background: 'var(--color-bg-dark)', overflow: 'hidden' }}>
+                  <div
+                    style={{ position: 'relative', paddingTop: '100%', background: 'var(--color-bg-dark)', overflow: 'hidden', cursor: 'zoom-in' }}
+                    onClick={() => setLightboxUrl(item.media_url)}
+                  >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={item.media_url} alt="Studio edit"
-                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.3s ease' }}
+                      onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.04)')}
+                      onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+                    />
                     <div style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '0.7rem', fontWeight: 600, padding: '4px 8px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>
                       Studio
                     </div>
@@ -203,6 +229,55 @@ export default function GalleryPage() {
           )
         )}
       </div>
+
+      {/* ── Lightbox ── */}
+      {lightboxUrl && (
+        <div
+          onClick={() => setLightboxUrl(null)}
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0,0,0,0.88)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 9999, cursor: 'zoom-out',
+            backdropFilter: 'blur(10px)',
+            animation: 'fadeIn 0.15s ease',
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={lightboxUrl}
+            alt="Preview"
+            onClick={e => e.stopPropagation()}
+            style={{
+              maxWidth: '92vw', maxHeight: '90vh',
+              objectFit: 'contain',
+              borderRadius: 12,
+              boxShadow: '0 32px 80px rgba(0,0,0,0.6)',
+              cursor: 'default',
+            }}
+          />
+          <button
+            onClick={() => setLightboxUrl(null)}
+            style={{
+              position: 'fixed', top: 20, right: 20,
+              background: 'rgba(255,255,255,0.12)',
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.2)',
+              color: '#fff',
+              borderRadius: '50%',
+              width: 44, height: 44,
+              cursor: 'pointer',
+              fontSize: 20, fontWeight: 300,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'background 0.2s',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.25)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
+          >
+            <X size={20} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
