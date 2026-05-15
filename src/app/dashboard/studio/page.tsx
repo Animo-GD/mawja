@@ -176,49 +176,30 @@ function StudioContent() {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-        
-        // Check for cached version or active background task
-        const activeTask = backgroundTasks.get(mediaUrl);
+        // ── Load cached image & texts ──
         const cacheKey = `studio_cache_${mediaUrl}`;
         const cachedData = localStorage.getItem(cacheKey);
+        const textKey = `studio_texts_${mediaUrl}`;
+        let initialTexts: TextObject[] = [];
+        try {
+          const storedTexts = localStorage.getItem(textKey);
+          if (storedTexts) initialTexts = JSON.parse(storedTexts);
+        } catch (e) {}
 
-        if (activeTask) {
-          setIsErasing(true);
-          if (cachedData) {
-             const cachedImg = new window.Image();
-             cachedImg.onload = () => { ctx.drawImage(cachedImg, 0, 0); setIsLoaded(true); setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]); };
-             cachedImg.src = cachedData;
-          } else {
-             ctx.drawImage(img, 0, 0); setIsLoaded(true); setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
-          }
+        const finalizeLoad = (imgToDraw: HTMLImageElement, isCache: boolean) => {
+          ctx.drawImage(imgToDraw, 0, 0);
+          setIsLoaded(true);
+          setTexts(initialTexts);
+          setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: initialTexts }]);
+          if (isCache) toast.success('Work restored from cache');
+        };
 
-          activeTask.then(finalBase64 => {
-             const finalImg = new window.Image();
-             finalImg.onload = () => {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.drawImage(finalImg, 0, 0);
-                setUndoStack(prev => [...prev.slice(-19), { imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: prev.length > 0 ? prev[prev.length - 1].texts : [] }]);
-                toast.success('Background task finished!');
-                setIsErasing(false);
-             };
-             finalImg.src = finalBase64;
-          }).catch(() => {
-             toast.error('Background task failed');
-             setIsErasing(false);
-          });
-        } else if (cachedData) {
+        if (cachedData) {
           const cachedImg = new window.Image();
-          cachedImg.onload = () => {
-            ctx.drawImage(cachedImg, 0, 0);
-            setIsLoaded(true);
-            setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
-            toast.success('Work restored from cache');
-          };
+          cachedImg.onload = () => finalizeLoad(cachedImg, true);
           cachedImg.src = cachedData;
         } else {
-          ctx.drawImage(img, 0, 0);
-          setIsLoaded(true);
-          setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
+          finalizeLoad(img, false);
         }
       };
       img.onerror = () => toast.error('Failed to load image');
@@ -248,8 +229,19 @@ function StudioContent() {
   const resetToOriginal = () => {
     if (!confirm('Discard all changes and reset to original?')) return;
     localStorage.removeItem(`studio_cache_${mediaUrl}`);
+    localStorage.removeItem(`studio_texts_${mediaUrl}`);
     window.location.reload();
   };
+
+  // ── Persist texts to localStorage whenever they change ──────────────
+  useEffect(() => {
+    if (!mediaUrl || !isLoaded) return;
+    try {
+      localStorage.setItem(`studio_texts_${mediaUrl}`, JSON.stringify(texts));
+    } catch (e) {
+      console.warn('Failed to cache texts');
+    }
+  }, [texts, mediaUrl, isLoaded]);
 
   const undo = useCallback(() => {
     const canvas = canvasRef.current;
