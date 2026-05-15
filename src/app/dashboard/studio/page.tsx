@@ -811,7 +811,6 @@ function StudioContent() {
     setSelectedTextId(null);
   };
 
-  const [isSaving, setIsSaving] = useState(false);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
 
   // ── Save to Gallery ──────────────────────────────────────────────
