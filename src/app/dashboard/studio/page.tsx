@@ -502,7 +502,9 @@ function StudioContent() {
         finalImg.onload = () => {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(finalImg, 0, 0, canvas.width, canvas.height);
+          setUndoStack(prev => [...prev.slice(-19), { imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: texts }]);
           setSelection(null);
+          clearMask();           // ← clear the red brush mask overlay
           setIsErasing(false);
           toast.success('AI Erase applied!');
         };
