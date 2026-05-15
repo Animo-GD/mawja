@@ -17,6 +17,19 @@ interface TextObject {
   color: string;
   fontFamily: string;
   fontScript: 'arabic' | 'english';
+  fontWeight: string;
+  fontStyle: 'normal' | 'italic';
+  opacity: number;
+  letterSpacing: number;
+  textTransform: 'none' | 'uppercase' | 'lowercase';
+  shadowEnabled: boolean;
+  shadowColor: string;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  strokeEnabled: boolean;
+  strokeColor: string;
+  strokeWidth: number;
 }
 
 const ARABIC_FONTS = [
@@ -109,6 +122,20 @@ function StudioContent() {
   const [textPos, setTextPos] = useState<{ x: number; y: number } | null>(null);
   const [fontFamily, setFontFamily] = useState('Inter');
   const [fontScript, setFontScript] = useState<'arabic' | 'english'>('english');
+  const [fontWeight, setFontWeight] = useState('bold');
+  const [fontStyle, setFontStyle] = useState<'normal' | 'italic'>('normal');
+  const [textOpacity, setTextOpacity] = useState(1);
+  const [letterSpacing, setLetterSpacing] = useState(0);
+  const [textTransform, setTextTransform] = useState<'none' | 'uppercase' | 'lowercase'>('none');
+  const [shadowEnabled, setShadowEnabled] = useState(false);
+  const [shadowColor, setShadowColor] = useState('#000000');
+  const [shadowBlur, setShadowBlur] = useState(8);
+  const [shadowOffsetX, setShadowOffsetX] = useState(3);
+  const [shadowOffsetY, setShadowOffsetY] = useState(3);
+  const [strokeEnabled, setStrokeEnabled] = useState(false);
+  const [strokeColor, setStrokeColor] = useState('#000000');
+  const [strokeWidth, setStrokeWidth] = useState(2);
+  const [textModalTab, setTextModalTab] = useState<'style' | 'effects'>('style');
 
   // Multi-text state
   const [texts, setTexts] = useState<TextObject[]>([]);
@@ -646,21 +673,31 @@ function StudioContent() {
   // ── Commit text ───────────────────────────────────────────────────
   const commitText = () => {
     if (!textPos || !pendingText.trim()) { setShowTextModal(false); return; }
-    
     const newText: TextObject = {
       id: Math.random().toString(36).substr(2, 9),
       text: pendingText,
       x: textPos.x,
       y: textPos.y,
-      fontSize: fontSize,
+      fontSize,
       color: textColor,
-      fontFamily: fontFamily,
-      fontScript: fontScript
+      fontFamily,
+      fontScript,
+      fontWeight,
+      fontStyle,
+      opacity: textOpacity,
+      letterSpacing,
+      textTransform,
+      shadowEnabled,
+      shadowColor,
+      shadowBlur,
+      shadowOffsetX,
+      shadowOffsetY,
+      strokeEnabled,
+      strokeColor,
+      strokeWidth,
     };
-
     setTexts(prev => [...prev, newText]);
     setSelectedTextId(newText.id);
-    
     setPendingText('');
     setShowTextModal(false);
     setTextPos(null);
@@ -689,15 +726,30 @@ function StudioContent() {
     const tctx = tempCanvas.getContext('2d')!;
     tctx.drawImage(canvas, 0, 0);
     texts.forEach(t => {
-      tctx.font = `bold ${t.fontSize}px "${t.fontFamily}", sans-serif`;
-      tctx.fillStyle = t.color;
+      const displayText = t.textTransform === 'uppercase' ? t.text.toUpperCase()
+        : t.textTransform === 'lowercase' ? t.text.toLowerCase() : t.text;
+      tctx.save();
+      tctx.globalAlpha = t.opacity ?? 1;
+      tctx.font = `${t.fontStyle ?? 'normal'} ${t.fontWeight ?? 'bold'} ${t.fontSize}px "${t.fontFamily}", sans-serif`;
       tctx.textBaseline = 'middle';
-      if (t.fontScript === 'arabic') {
-        const metrics = tctx.measureText(t.text);
-        tctx.fillText(t.text, t.x - metrics.width, t.y);
-      } else {
-        tctx.fillText(t.text, t.x, t.y);
+      (tctx as any).letterSpacing = `${t.letterSpacing ?? 0}px`;
+      if (t.shadowEnabled) {
+        tctx.shadowColor = t.shadowColor;
+        tctx.shadowBlur = t.shadowBlur;
+        tctx.shadowOffsetX = t.shadowOffsetX;
+        tctx.shadowOffsetY = t.shadowOffsetY;
       }
+      tctx.fillStyle = t.color;
+      const xPos = t.fontScript === 'arabic' ? t.x - tctx.measureText(displayText).width : t.x;
+      tctx.fillText(displayText, xPos, t.y);
+      if (t.strokeEnabled && t.strokeWidth > 0) {
+        tctx.shadowBlur = 0; tctx.shadowColor = 'transparent';
+        tctx.strokeStyle = t.strokeColor;
+        tctx.lineWidth = t.strokeWidth;
+        tctx.lineJoin = 'round';
+        tctx.strokeText(displayText, xPos, t.y);
+      }
+      tctx.restore();
     });
     tempCanvas.toBlob((blob) => {
       if (!blob) { toast.error('Export failed'); setIsSaving(false); return; }
@@ -726,7 +778,7 @@ function StudioContent() {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 0, height: 'calc(100vh - 80px)', background: '#f5f5f5', borderRadius: 12, overflow: 'hidden', border: '1px solid #e8e8e8' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 0, height: 'calc(100vh - 80px)', background: '#f5f5f5', borderRadius: 12, overflow: 'hidden', border: '1px solid #e8e8e8' }}>
 
       {/* ── Left Tool Panel ── */}
       <div style={{ background: '#fff', borderRight: '1px solid #ececec', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
@@ -754,25 +806,35 @@ function StudioContent() {
           ))}
         </div>
 
-        {/* Selection action buttons */}
-        {tool === 'select' && selection && selection.width > 2 && (
-          <div style={{ padding: '10px 8px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: '0.75rem', color: '#999', paddingLeft: 6 }}>
-              {Math.round(selection.width)} × {Math.round(selection.height)}px selected
-            </div>
+        {/* Brush panel — in sidebar, not floating on canvas */}
+        {tool === 'brush' && isLoaded && (
+          <div style={{ padding: '12px 10px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#555', paddingLeft: 4 }}>Brush Size — {brushSize}px</div>
+            <input type="range" min={10} max={150} value={brushSize} onChange={e => setBrushSize(+e.target.value)} style={{ width: '100%' }} />
             <button
               onClick={handleEraseSelection}
-              disabled={isErasing}
-              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '10px 14px', borderRadius: 8, border: 'none', background: isErasing ? '#ccc' : '#ef4444', color: '#fff', cursor: isErasing ? 'not-allowed' : 'pointer', fontSize: '0.87rem', fontWeight: 600 }}
+              disabled={!hasMask || isErasing}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 14px', borderRadius: 8, border: 'none', background: hasMask && !isErasing ? '#ef4444' : '#ccc', color: '#fff', cursor: hasMask && !isErasing ? 'pointer' : 'not-allowed', fontSize: '0.87rem', fontWeight: 600 }}
             >
               {isErasing ? <><Loader2 size={14} className="spin" /> Working…</> : <><Eraser size={14} /> AI Erase</>}
             </button>
-            <button
-              onClick={() => setSelection(null)}
-              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '7px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.82rem', color: '#999' }}
-            >
-              <X size={12} /> Clear selection
-            </button>
+            {hasMask && !isErasing && (
+              <button onClick={clearMask} style={{ width: '100%', background: 'transparent', border: '1px solid #ddd', borderRadius: 8, padding: '7px 12px', fontSize: '0.82rem', cursor: 'pointer', color: '#666' }}>Clear Mask</button>
+            )}
+            {isErasing && <div style={{ fontSize: '0.75rem', color: '#888', textAlign: 'center' }}>AI is working…</div>}
+          </div>
+        )}
+
+        {/* Selection action buttons */}
+        {tool === 'select' && selection && selection.width > 2 && (
+          <div style={{ padding: '10px 10px', borderBottom: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: '0.75rem', color: '#999', paddingLeft: 4 }}>{Math.round(selection.width)} × {Math.round(selection.height)}px</div>
+            <button onClick={handleEraseSelection} disabled={isErasing}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 14px', borderRadius: 8, border: 'none', background: isErasing ? '#ccc' : '#ef4444', color: '#fff', cursor: isErasing ? 'not-allowed' : 'pointer', fontSize: '0.87rem', fontWeight: 600 }}
+            >{isErasing ? <><Loader2 size={14} className="spin" /> Working…</> : <><Eraser size={14} /> AI Erase</>}</button>
+            <button onClick={() => setSelection(null)}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 8, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '0.82rem', color: '#999' }}
+            ><X size={12} /> Clear</button>
           </div>
         )}
 
@@ -835,6 +897,8 @@ function StudioContent() {
           {/* Text Objects Overlay */}
           {texts.map(t => {
             const isSelected = t.id === selectedTextId;
+            const displayText = (t.textTransform === 'uppercase' ? t.text.toUpperCase() : t.textTransform === 'lowercase' ? t.text.toLowerCase() : t.text);
+            const scaledFs = (t.fontSize / (canvasRef.current?.width || 1)) * (containerRef.current?.offsetWidth || 0);
             return (
               <div key={t.id}
                 onMouseDown={(e) => {
@@ -847,17 +911,25 @@ function StudioContent() {
                 }}
                 style={{
                   position: 'absolute',
-                  left: `${(t.x / canvasRef.current!.width) * 100}%`,
-                  top: `${(t.y / canvasRef.current!.height) * 100}%`,
+                  left: `${(t.x / (canvasRef.current?.width || 1)) * 100}%`,
+                  top: `${(t.y / (canvasRef.current?.height || 1)) * 100}%`,
                   transform: t.fontScript === 'arabic' ? 'translateX(-100%) translateY(-50%)' : 'translateY(-50%)',
-                  color: t.color, fontSize: `${(t.fontSize / canvasRef.current!.width) * (containerRef.current?.offsetWidth || 0)}px`,
-                  fontFamily: `"${t.fontFamily}", sans-serif`, fontWeight: 'bold',
+                  color: t.color,
+                  fontSize: `${scaledFs}px`,
+                  fontFamily: `"${t.fontFamily}", sans-serif`,
+                  fontWeight: t.fontWeight ?? 'bold',
+                  fontStyle: t.fontStyle ?? 'normal',
+                  opacity: t.opacity ?? 1,
+                  letterSpacing: `${(t.letterSpacing ?? 0) * (scaledFs / (t.fontSize || 1))}px`,
+                  textTransform: (t.textTransform ?? 'none') as any,
+                  textShadow: t.shadowEnabled ? `${t.shadowOffsetX}px ${t.shadowOffsetY}px ${t.shadowBlur}px ${t.shadowColor}` : 'none',
+                  WebkitTextStroke: t.strokeEnabled ? `${t.strokeWidth}px ${t.strokeColor}` : undefined,
                   cursor: draggingId === t.id ? 'grabbing' : 'grab', userSelect: 'none', whiteSpace: 'nowrap',
                   padding: '3px 6px', border: isSelected ? '1.5px dashed rgba(99,102,241,0.8)' : '1.5px solid transparent',
                   borderRadius: 3, background: isSelected ? 'rgba(99,102,241,0.07)' : 'transparent',
                   zIndex: isSelected ? 10 : 5, pointerEvents: isErasing ? 'none' : 'auto'
                 }}
-              >{t.text}</div>
+              >{displayText}</div>
             );
           })}
 
@@ -880,53 +952,169 @@ function StudioContent() {
             </div>
           )}
           {isErasing && <div style={{ position: 'absolute', inset: 0, zIndex: 10, cursor: 'not-allowed' }} />}
-
-          {/* Brush erase controls — floating panel */}
-          {tool === 'brush' && isLoaded && (
-            <div style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, minWidth: 180, boxShadow: '0 4px 24px rgba(0,0,0,0.12)', zIndex: 8 }}>
-              <div>
-                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#555', marginBottom: 6 }}>Brush Size — {brushSize}px</div>
-                <input type="range" min={10} max={150} value={brushSize} onChange={e => setBrushSize(+e.target.value)} style={{ width: '100%' }} />
-              </div>
-              <button
-                onClick={handleEraseSelection}
-                disabled={!hasMask || isErasing}
-                style={{ background: hasMask && !isErasing ? '#ef4444' : '#ccc', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 12px', fontWeight: 600, fontSize: '0.85rem', cursor: hasMask && !isErasing ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}
-              >
-                {isErasing ? <><Loader2 size={13} className="spin" /> Working…</> : <><Eraser size={13} /> AI Erase</>}
-              </button>
-              {hasMask && !isErasing && (
-                <button onClick={clearMask} style={{ background: 'transparent', border: '1px solid #ddd', borderRadius: 8, padding: '7px 12px', fontSize: '0.82rem', cursor: 'pointer', color: '#666' }}>
-                  Clear Mask
-                </button>
-              )}
-            </div>
-          )}
         </div>
 
-        {/* Text input modal */}
+        {/* Full text customization modal */}
         {showTextModal && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)', zIndex: 10 }}>
-            <div style={{ background: '#fff', borderRadius: 14, padding: 24, display: 'flex', flexDirection: 'column', gap: 14, minWidth: 300, maxWidth: 400, boxShadow: '0 8px 40px rgba(0,0,0,0.18)' }}>
-              <p style={{ margin: 0, fontWeight: 600, color: '#111' }}>Add Text to Image</p>
-              <div style={{ fontSize: '0.75rem', color: '#888', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>Font: <strong>{fontFamily}</strong></span><span>·</span><span>{fontSize}px</span>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', zIndex: 10 }}>
+            <div style={{ background: '#fff', borderRadius: 16, padding: 0, display: 'flex', flexDirection: 'column', width: 420, maxHeight: '90vh', boxShadow: '0 16px 60px rgba(0,0,0,0.2)', overflow: 'hidden' }}>
+              {/* Header */}
+              <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 700, fontSize: '1rem', color: '#111' }}>Add Text</span>
+                <button onClick={() => { setShowTextModal(false); setPendingText(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#888', display: 'flex' }}><X size={18} /></button>
               </div>
-              <input
-                autoFocus
-                style={{ border: '1px solid #e5e5e5', borderRadius: 8, padding: '10px 12px', fontSize: '1.05rem', fontFamily, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', outline: 'none', color: '#111' }}
-                placeholder={fontScript === 'arabic' ? 'اكتب النص هنا…' : 'Type your text…'}
-                value={pendingText}
-                onChange={e => setPendingText(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') commitText(); if (e.key === 'Escape') setShowTextModal(false); }}
-              />
-              {pendingText && (
-                <div style={{ padding: '10px 14px', background: '#111', borderRadius: 8, fontFamily, fontSize: Math.min(fontSize, 32), color: textColor, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', textAlign: fontScript === 'arabic' ? 'right' : 'left', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-                  {pendingText}
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={commitText}><Check size={15} style={{ marginInlineEnd: 6 }} /> Place</button>
+              {/* Tabs */}
+              <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0', padding: '0 8px' }}>
+                {(['style', 'effects'] as const).map(tab => (
+                  <button key={tab} onClick={() => setTextModalTab(tab)}
+                    style={{ padding: '10px 16px', border: 'none', background: 'none', cursor: 'pointer', fontWeight: textModalTab === tab ? 700 : 400, color: textModalTab === tab ? '#6366f1' : '#888', borderBottom: textModalTab === tab ? '2px solid #6366f1' : '2px solid transparent', fontSize: '0.88rem', textTransform: 'capitalize' }}
+                  >{tab}</button>
+                ))}
+              </div>
+              <div style={{ overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
+                {/* Text input always visible */}
+                <textarea autoFocus rows={2}
+                  style={{ border: '1px solid #e5e5e5', borderRadius: 8, padding: '10px 12px', fontSize: '1rem', fontFamily, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', outline: 'none', color: '#111', resize: 'none', fontWeight, fontStyle }}
+                  placeholder={fontScript === 'arabic' ? 'اكتب النص هنا…' : 'Type your text…'}
+                  value={pendingText}
+                  onChange={e => setPendingText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitText(); } if (e.key === 'Escape') setShowTextModal(false); }}
+                />
+                {/* Live preview */}
+                {pendingText && (
+                  <div style={{ padding: '12px 16px', background: '#111', borderRadius: 8, fontFamily, fontSize: Math.min(fontSize * 0.5, 36), color: textColor, direction: fontScript === 'arabic' ? 'rtl' : 'ltr', fontWeight, fontStyle, opacity: textOpacity, letterSpacing: `${letterSpacing}px`, textTransform: textTransform as any, textShadow: shadowEnabled ? `${shadowOffsetX}px ${shadowOffsetY}px ${shadowBlur}px ${shadowColor}` : 'none', WebkitTextStroke: strokeEnabled ? `${strokeWidth}px ${strokeColor}` : undefined, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                    {pendingText}
+                  </div>
+                )}
+
+                {textModalTab === 'style' && (<>
+                  {/* Script */}
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {(['english', 'arabic'] as const).map(s => (
+                      <button key={s} onClick={() => setFontScript(s)}
+                        style={{ flex: 1, padding: '7px', borderRadius: 7, border: '1px solid', borderColor: fontScript === s ? '#6366f1' : '#e5e5e5', background: fontScript === s ? '#ede9fe' : 'transparent', color: fontScript === s ? '#6366f1' : '#555', fontWeight: 600, cursor: 'pointer', fontSize: '0.82rem' }}
+                      >{s === 'arabic' ? 'العربية' : 'English'}</button>
+                    ))}
+                  </div>
+                  {/* Font family */}
+                  <div>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#555', marginBottom: 5 }}>Font Family</div>
+                    <select value={fontFamily} onChange={e => setFontFamily(e.target.value)}
+                      style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.88rem', fontFamily: fontFamily }}>
+                      {(fontScript === 'arabic' ? ARABIC_FONTS : ENGLISH_FONTS).map(f => (
+                        <option key={f.name} value={f.name} style={{ fontFamily: f.name }}>{f.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {/* Size + Weight + Style row */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Size</div>
+                      <input type="number" min={10} max={300} value={fontSize} onChange={e => setFontSize(+e.target.value)}
+                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.88rem' }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Weight</div>
+                      <select value={fontWeight} onChange={e => setFontWeight(e.target.value)}
+                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
+                        {['300','400','normal','600','bold','700','900'].map(w => <option key={w} value={w}>{w}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Style</div>
+                      <select value={fontStyle} onChange={e => setFontStyle(e.target.value as any)}
+                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
+                        <option value="normal">Normal</option>
+                        <option value="italic">Italic</option>
+                      </select>
+                    </div>
+                  </div>
+                  {/* Color + Opacity */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Color</div>
+                      <input type="color" value={textColor} onChange={e => setTextColor(e.target.value)}
+                        style={{ width: '100%', height: 36, borderRadius: 7, border: '1px solid #e5e5e5', cursor: 'pointer', padding: 2 }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Opacity — {Math.round(textOpacity * 100)}%</div>
+                      <input type="range" min={0} max={1} step={0.05} value={textOpacity} onChange={e => setTextOpacity(+e.target.value)} style={{ width: '100%', marginTop: 10 }} />
+                    </div>
+                  </div>
+                  {/* Letter spacing + Transform */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Spacing — {letterSpacing}px</div>
+                      <input type="range" min={-5} max={30} value={letterSpacing} onChange={e => setLetterSpacing(+e.target.value)} style={{ width: '100%', marginTop: 6 }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#555', marginBottom: 4 }}>Transform</div>
+                      <select value={textTransform} onChange={e => setTextTransform(e.target.value as any)}
+                        style={{ width: '100%', padding: '7px 8px', borderRadius: 7, border: '1px solid #e5e5e5', fontSize: '0.82rem' }}>
+                        <option value="none">None</option>
+                        <option value="uppercase">UPPERCASE</option>
+                        <option value="lowercase">lowercase</option>
+                      </select>
+                    </div>
+                  </div>
+                </>)}
+
+                {textModalTab === 'effects' && (<>
+                  {/* Shadow */}
+                  <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={shadowEnabled} onChange={e => setShadowEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 15, height: 15 }} />
+                      Text Shadow
+                    </label>
+                    {shadowEnabled && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Color</div>
+                            <input type="color" value={shadowColor} onChange={e => setShadowColor(e.target.value)} style={{ width: '100%', height: 32, borderRadius: 6, border: '1px solid #e5e5e5', padding: 2 }} />
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Blur — {shadowBlur}px</div>
+                            <input type="range" min={0} max={40} value={shadowBlur} onChange={e => setShadowBlur(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>X — {shadowOffsetX}px</div>
+                            <input type="range" min={-20} max={20} value={shadowOffsetX} onChange={e => setShadowOffsetX(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Y — {shadowOffsetY}px</div>
+                            <input type="range" min={-20} max={20} value={shadowOffsetY} onChange={e => setShadowOffsetY(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Stroke */}
+                  <div style={{ border: '1px solid #f0f0f0', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={strokeEnabled} onChange={e => setStrokeEnabled(e.target.checked)} style={{ accentColor: '#6366f1', width: 15, height: 15 }} />
+                      Text Stroke (Outline)
+                    </label>
+                    {strokeEnabled && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <div>
+                          <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Color</div>
+                          <input type="color" value={strokeColor} onChange={e => setStrokeColor(e.target.value)} style={{ width: '100%', height: 32, borderRadius: 6, border: '1px solid #e5e5e5', padding: 2 }} />
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.72rem', color: '#555', marginBottom: 3 }}>Width — {strokeWidth}px</div>
+                          <input type="range" min={1} max={10} value={strokeWidth} onChange={e => setStrokeWidth(+e.target.value)} style={{ width: '100%', marginTop: 8 }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>)}
+              </div>
+              {/* Footer */}
+              <div style={{ padding: '14px 20px', borderTop: '1px solid #f0f0f0', display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={commitText}><Check size={15} style={{ marginInlineEnd: 6 }} /> Place Text</button>
                 <button className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => { setShowTextModal(false); setPendingText(''); }}><X size={15} style={{ marginInlineEnd: 6 }} /> Cancel</button>
               </div>
             </div>
