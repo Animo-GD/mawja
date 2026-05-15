@@ -710,38 +710,6 @@ function StudioContent() {
   };
 
 
-  // ── Commit text ───────────────────────────────────────────────────
-  const commitText = () => {
-    if (!textPos || !pendingText.trim()) { setShowTextModal(false); return; }
-    const newText: TextObject = {
-      id: Math.random().toString(36).substr(2, 9),
-      text: pendingText,
-      x: textPos.x,
-      y: textPos.y,
-      fontSize,
-      color: textColor,
-      fontFamily,
-      fontScript,
-      fontWeight,
-      fontStyle,
-      opacity: textOpacity,
-      letterSpacing,
-      textTransform,
-      shadowEnabled,
-      shadowColor,
-      shadowBlur,
-      shadowOffsetX,
-      shadowOffsetY,
-      strokeEnabled,
-      strokeColor,
-      strokeWidth,
-    };
-    setTexts(prev => [...prev, newText]);
-    setSelectedTextId(newText.id);
-    setPendingText('');
-    setShowTextModal(false);
-    setTextPos(null);
-  };
 
   const updateSelectedText = (updates: Partial<TextObject>) => {
     if (!selectedTextId) return;
