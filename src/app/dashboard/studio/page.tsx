@@ -75,8 +75,11 @@ function StudioContent() {
   const mediaUrl = searchParams.get('media_url') || '';
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const maskCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Offscreen canvas holding the clean image before brush strokes
+  const cleanCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Brush strokes stored in canvas-space coordinates (no CSS scaling)
+  const maskStrokesRef = useRef<{ x: number; y: number; radius: number }[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -184,11 +187,6 @@ function StudioContent() {
           cachedImg.src = cachedData;
         } else {
           ctx.drawImage(img, 0, 0);
-          // Sync mask canvas INTERNAL dimensions to match main canvas
-          if (maskCanvasRef.current) {
-            maskCanvasRef.current.width = canvas.width;
-            maskCanvasRef.current.height = canvas.height;
-          }
           setIsLoaded(true);
           setUndoStack([{ imageData: ctx.getImageData(0, 0, canvas.width, canvas.height), texts: [] }]);
         }
@@ -229,14 +227,35 @@ function StudioContent() {
     const newStack = undoStack.slice(0, -1);
     setUndoStack(newStack);
     const lastState = newStack[newStack.length - 1];
-    canvas.getContext('2d', { willReadFrequently: true })!.putImageData(lastState.imageData, 0, 0);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.putImageData(lastState.imageData, 0, 0);
     setTexts(lastState.texts);
-    
-    // Update cache to match undo state
+    // Clear any brush mask so it doesn't linger after undo
+    maskStrokesRef.current = [];
+    setHasMask(false);
+    // Update the clean reference so brush mode starts fresh
+    if (cleanCanvasRef.current) {
+      cleanCanvasRef.current.getContext('2d')!.drawImage(canvas, 0, 0);
+    }
     try {
       localStorage.setItem(`studio_cache_${mediaUrl}`, canvas.toDataURL('image/png', 0.8));
     } catch (e) {}
   }, [undoStack, mediaUrl]);
+
+  // ── Capture clean canvas snapshot whenever brush mode is activated ──
+  useEffect(() => {
+    if (tool === 'brush' && isLoaded) {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      maskStrokesRef.current = [];
+      setHasMask(false);
+      const offscreen = document.createElement('canvas');
+      offscreen.width = canvas.width;
+      offscreen.height = canvas.height;
+      offscreen.getContext('2d')!.drawImage(canvas, 0, 0);
+      cleanCanvasRef.current = offscreen;
+    }
+  }, [tool, isLoaded]);
 
   const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current!;
@@ -276,53 +295,70 @@ function StudioContent() {
     }
   };
 
-  // Paint on the mask canvas using raw client coordinates
-  const paintMask = (clientX: number, clientY: number) => {
-    const maskCanvas = maskCanvasRef.current;
+  // ── Brush painting — draws directly on the main canvas ──────────────
+  // All coordinates stored in canvas-space (canvas.width x canvas.height) — zero CSS scaling issues.
+
+  const renderMaskOverlay = () => {
     const canvas = canvasRef.current;
-    if (!maskCanvas || !canvas) return;
+    const clean = cleanCanvasRef.current;
+    if (!canvas || !clean) return;
+    const ctx = canvas.getContext('2d')!;
+    // 1. Restore the pre-brush clean state
+    ctx.drawImage(clean, 0, 0);
+    // 2. Paint all accumulated strokes as a translucent red tint
+    ctx.save();
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.28)';
+    for (const s of maskStrokesRef.current) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  };
+
+  const paintMask = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
+    // scaleX converts CSS display pixels → canvas internal pixels
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    // Convert from screen coords to canvas internal coords
     const x = (clientX - rect.left) * scaleX;
     const y = (clientY - rect.top) * scaleY;
-    // brushSize is in SCREEN pixels, convert to canvas internal pixels
-    // radius on canvas = (brushSize/2) * scaleX so visual radius = brushSize/2 px
-    const radius = (brushSize / 2) * Math.max(scaleX, scaleY);
-    const ctx = maskCanvas.getContext('2d')!;
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.25)';
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
+    // Brush radius in canvas pixels: (brushSize/2 display px) * scaleX = correct canvas px
+    const radius = (brushSize / 2) * scaleX;
+    maskStrokesRef.current = [...maskStrokesRef.current, { x, y, radius }];
     setHasMask(true);
+    renderMaskOverlay();
   };
 
   const clearMask = () => {
-    const maskCanvas = maskCanvasRef.current;
-    if (!maskCanvas) return;
-    maskCanvas.getContext('2d')!.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    maskStrokesRef.current = [];
     setHasMask(false);
+    // Restore clean image (remove the painted overlay)
+    const canvas = canvasRef.current;
+    const clean = cleanCanvasRef.current;
+    if (canvas && clean) {
+      canvas.getContext('2d')!.drawImage(clean, 0, 0);
+    }
   };
 
   const getMaskBase64 = (): string | null => {
-    const maskCanvas = maskCanvasRef.current;
-    if (!maskCanvas) return null;
+    const canvas = canvasRef.current;
+    if (!canvas || maskStrokesRef.current.length === 0) return null;
+    // Create a black background with white circles where strokes were
     const bw = document.createElement('canvas');
-    bw.width = maskCanvas.width;
-    bw.height = maskCanvas.height;
-    const bwCtx = bw.getContext('2d')!;
-    bwCtx.fillStyle = 'black';
-    bwCtx.fillRect(0, 0, bw.width, bw.height);
-    const src = maskCanvas.getContext('2d')!.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-    const dst = bwCtx.getImageData(0, 0, bw.width, bw.height);
-    for (let i = 0; i < src.data.length; i += 4) {
-      if (src.data[i + 3] > 10) {
-        dst.data[i] = 255; dst.data[i+1] = 255; dst.data[i+2] = 255; dst.data[i+3] = 255;
-      }
+    bw.width = canvas.width;
+    bw.height = canvas.height;
+    const ctx = bw.getContext('2d')!;
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, bw.width, bw.height);
+    ctx.fillStyle = 'white';
+    for (const s of maskStrokesRef.current) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+      ctx.fill();
     }
-    bwCtx.putImageData(dst, 0, 0);
     return bw.toDataURL('image/png');
   };
 
@@ -706,19 +742,7 @@ function StudioContent() {
             style={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: 'calc(100vh - 100px)', cursor: tool === 'select' ? 'crosshair' : tool === 'brush' ? 'none' : 'text', touchAction: 'none' }}
             onMouseDown={onMouseDown}
           />
-          {/* Mask canvas overlay — same internal resolution as main canvas, CSS-scaled to match */}
-          <canvas
-            ref={maskCanvasRef}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              height: '100%',
-              pointerEvents: 'none',
-              zIndex: 3,
-            }}
-          />
+          {/* Brush mask drawn directly on main canvas — no overlay canvas needed */}
           {/* Visual brush cursor circle */}
           {tool === 'brush' && cursorPos && (
             <div style={{
