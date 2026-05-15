@@ -184,7 +184,7 @@ function StudioContent() {
           cachedImg.src = cachedData;
         } else {
           ctx.drawImage(img, 0, 0);
-          // Sync mask canvas dimensions
+          // Sync mask canvas INTERNAL dimensions to match main canvas
           if (maskCanvasRef.current) {
             maskCanvasRef.current.width = canvas.width;
             maskCanvasRef.current.height = canvas.height;
@@ -284,15 +284,17 @@ function StudioContent() {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
+    // Convert from screen coords to canvas internal coords
     const x = (clientX - rect.left) * scaleX;
     const y = (clientY - rect.top) * scaleY;
-    // brushSize is in display pixels — convert to canvas pixels
-    const radiusCanvas = (brushSize / 2) * scaleX;
+    // brushSize is in SCREEN pixels, convert to canvas internal pixels
+    // radius on canvas = (brushSize/2) * scaleX so visual radius = brushSize/2 px
+    const radius = (brushSize / 2) * Math.max(scaleX, scaleY);
     const ctx = maskCanvas.getContext('2d')!;
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.55)';
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
     ctx.beginPath();
-    ctx.arc(x, y, radiusCanvas, 0, Math.PI * 2);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
     setHasMask(true);
   };
@@ -708,10 +710,18 @@ function StudioContent() {
             style={{ display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: 'calc(100vh - 100px)', cursor: tool === 'select' ? 'crosshair' : tool === 'brush' ? 'none' : 'text', touchAction: 'none' }}
             onMouseDown={onMouseDown}
           />
-          {/* Mask canvas overlay – shows painted area in red */}
+          {/* Mask canvas overlay — same internal resolution as main canvas, CSS-scaled to match */}
           <canvas
             ref={maskCanvasRef}
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 3 }}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'none',
+              zIndex: 3,
+            }}
           />
           {/* Visual brush cursor circle */}
           {tool === 'brush' && cursorPos && (
